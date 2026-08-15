@@ -127,7 +127,37 @@ const hintStyle: CSSProperties = { margin: '8px 0 0', fontSize: 12, color: 'var(
 export function RestartButton({ wide, t }: RestartButtonProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   const [open, setOpen] = useState(false)
+  const [railHost, setRailHost] = useState<HTMLElement | null>(null)
   const timer = useRef<number | undefined>(undefined)
+
+  // Collapsed 56px rail: join the same vertical stack as the neighbouring
+  // remote-control entry (phone/update icons) instead of taking a second
+  // horizontal slot in the footer row. Locate that stack by the phone
+  // trigger's aria-label, fall back to plain rendering when absent.
+  useEffect(() => {
+    if (wide) {
+      setRailHost(null)
+      return
+    }
+    const findHost = (): HTMLElement | null => {
+      const phone = [...document.querySelectorAll('button')].find(b => {
+        const l = b.getAttribute('aria-label') || ''
+        return l.includes('移动端远程控制') || l.includes('Remote') || l.includes('远程')
+      })
+      return phone?.parentElement ?? null
+    }
+    setRailHost(findHost())
+    let tries = 0
+    const iv = window.setInterval(() => {
+      tries += 1
+      const h = findHost()
+      if (h || tries > 10) {
+        setRailHost(h)
+        window.clearInterval(iv)
+      }
+    }, 500)
+    return () => window.clearInterval(iv)
+  }, [wide])
 
   useEffect(() => () => {
     if (timer.current !== undefined) window.clearTimeout(timer.current)
@@ -197,20 +227,30 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
 
   const label = t('restart.label')
 
+  const trigger = (
+    <button
+      type="button"
+      style={wide ? triggerStyle : triggerRailStyle}
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        setPhase({ kind: 'confirming' })
+        setOpen(true)
+      }}
+    >
+      <RestartGlyph size={wide ? 16 : 18} />
+    </button>
+  )
+
+  // Rail + host found: render inside the remote-control stack so the restart
+  // icon lines up vertically under the phone/update icons.
+  if (!wide && railHost) {
+    return createPortal(trigger, railHost)
+  }
+
   return (
     <>
-      <button
-        type="button"
-        style={wide ? triggerStyle : triggerRailStyle}
-        aria-label={label}
-        title={label}
-        onClick={() => {
-          setPhase({ kind: 'confirming' })
-          setOpen(true)
-        }}
-      >
-        <RestartGlyph size={wide ? 16 : 18} />
-      </button>
+      {trigger}
       {open && createPortal((
         <div style={overlayStyle} role="presentation">
           <div style={maskStyle} aria-hidden="true" onClick={close} />
