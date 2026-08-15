@@ -152,9 +152,15 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   // Hover/active/focus styles: inline styles cannot express :hover, so inject
   // one stylesheet (idempotent) matching the neighbouring remote-control icon.
   useEffect(() => {
-    if (document.getElementById('dsh-restart-css')) return
+    // Versioned stylesheet id: a live-reconnected page may still hold an old
+    // injected <style> (same id check would skip the new rules and the button
+    // would fall back to the browser default background). Remove all known
+    // prior versions, then inject the current one.
+    for (const oldId of ['dsh-restart-css', 'dsh-restart-css-v2']) {
+      document.getElementById(oldId)?.remove()
+    }
     const style = document.createElement('style')
-    style.id = 'dsh-restart-css'
+    style.id = 'dsh-restart-css-v2'
     style.textContent = [
       '.dsh-restart-trigger{background:transparent;color:var(--dsw-alias-label-secondary);transition:background-color 120ms ease,color 120ms ease,box-shadow 120ms ease}',
       '.dsh-restart-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
