@@ -31,8 +31,8 @@ import { Recovery } from './host/recover.ts'
 /** Home that this plugin writes its state under. */
 const HOME = resolveDshHome(undefined, process.env)
 
-/** Required service seams from the root: webserver routes, subprocess spawn, prompt band. */
-export const inject = ['webServer', 'subprocess', 'systemPrompt'] as const
+/** Required service seams from the root: webserver routes, subprocess spawn, prompt band, commands. */
+export const inject = ['webServer', 'subprocess', 'systemPrompt', 'commands'] as const
 
 /** Model-facing announcement of the restart surface (audit / self-help copy). */
 export const RESTART_GUIDANCE =
