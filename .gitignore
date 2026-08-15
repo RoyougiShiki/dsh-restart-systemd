@@ -2,7 +2,6 @@
 node_modules/
 
 # build output (regenerate with `npm run build`)
-lib/
 
 # logs / editor
 *.log
