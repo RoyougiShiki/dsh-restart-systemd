@@ -133,6 +133,25 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     if (timer.current !== undefined) window.clearTimeout(timer.current)
   }, [])
 
+  // Boot fallback: if the page reloaded while the service was restarting
+  // (sessionStorage marker set before the request), probe until the origin
+  // is back and surface a "service restarted" dialog.
+  useEffect(() => {
+    let pending = false
+    try { pending = sessionStorage.getItem('dsh-restart-pending') === '1' } catch { /* ignore */ }
+    if (!pending) return
+    void (async () => {
+      await waitForReconnect(45000)
+      try { sessionStorage.removeItem('dsh-restart-pending') } catch { /* ignore */ }
+      setPhase({ kind: 'done' })
+      setOpen(true)
+      timer.current = window.setTimeout(() => {
+        setOpen(false)
+        setPhase({ kind: 'idle' })
+      }, 3500)
+    })()
+  }, [])
+
   const close = useCallback(() => {
     setOpen(false)
     if (phase.kind !== 'busy') setPhase({ kind: 'idle' })
@@ -145,6 +164,9 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       setPhase({ kind: 'done' })
       // already in flight — tie into the reconnect probe anyway
     } else if (result.status === 'scheduled') {
+      // Remember the restart across a possible page reload so the boot path
+      // can show a "service restarted" toast even if the UI tree reloads.
+      try { sessionStorage.setItem('dsh-restart-pending', '1') } catch { /* ignore */ }
       // The service will go down shortly; the connection client reconnects on
       // its own. Show a brief "triggered", then flip to "reconnected" once we
       // can reach the origin again.
@@ -159,15 +181,17 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     } else {
       setPhase({ kind: 'failed', message: result.message })
     }
-    // Auto-dismiss the result toast after a beat.
+    // Auto-dismiss the result dialog after a beat.
     timer.current = window.setTimeout(() => {
       setOpen(false)
       setPhase({ kind: 'idle' })
-    }, 2600)
+    }, 3500)
   }, [t])
 
   const confirm = useCallback(() => {
-    setOpen(false)
+    // Keep the dialog open: busy → reconnected → done must stay visible
+    // (previously setOpen(false) hid every later phase, so the user saw
+    // nothing after confirming).
     void run()
   }, [run])
 
