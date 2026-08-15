@@ -127,6 +127,15 @@ const successCardStyle: CSSProperties = {
 const successTitleStyle: CSSProperties = { margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
 const successSubStyle: CSSProperties = { margin: '2px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' }
 
+function SpinnerGlyph({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true" style={{ animation: 'dsh-restart-spin 1s linear infinite' }}>
+      <circle cx="8" cy="8" r="6" stroke="var(--dsw-alias-label-tertiary)" strokeWidth="2" opacity="0.35" />
+      <path d="M14 8a6 6 0 0 0-6-6" stroke="var(--dsw-alias-label-secondary)" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  )
+}
+
 function CheckGlyph({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -147,7 +156,16 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   const [open, setOpen] = useState(false)
   const [railHost, setRailHost] = useState<HTMLElement | null>(null)
+  const [busyAt, setBusyAt] = useState(0)
+  const [, setBusyTick] = useState(0)
   const timer = useRef<number | undefined>(undefined)
+
+  // Re-render every second while busy so the staged copy can switch.
+  useEffect(() => {
+    if (phase.kind !== 'busy') return
+    const iv = window.setInterval(() => setBusyTick((n) => n + 1), 1000)
+    return () => window.clearInterval(iv)
+  }, [phase.kind])
 
   // Hover/active/focus styles: inline styles cannot express :hover, so inject
   // one stylesheet (idempotent) matching the neighbouring remote-control icon.
@@ -166,6 +184,7 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       '.dsh-restart-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
       '.dsh-restart-trigger:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
       '.dsh-restart-trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-bg-layer-2),0 0 0 4px var(--dsw-alias-brand-primary);outline:none}',
+      '@keyframes dsh-restart-spin{to{transform:rotate(360deg)}}',
     ].join('\n')
     document.head.appendChild(style)
   }, [])
@@ -227,7 +246,7 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     try { pending = sessionStorage.getItem('dsh-restart-pending') === '1' } catch { /* ignore */ }
     if (!pending) return
     void (async () => {
-      await waitForReconnect(45000)
+      await waitForReconnect(20000)
       try { sessionStorage.removeItem('dsh-restart-pending') } catch { /* ignore */ }
       setPhase({ kind: 'done' })
       setOpen(true)
@@ -239,14 +258,25 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   }, [])
 
   const close = useCallback(() => {
+    // A restart in flight must not be dismissible — closing the dialog would
+    // hide the progress and the success card that follows.
+    if (phase.kind === 'busy') return
     setOpen(false)
-    if (phase.kind !== 'busy') setPhase({ kind: 'idle' })
+    setPhase({ kind: 'idle' })
   }, [phase.kind])
 
+  // Debounce double-confirms: a second run() would hit already-scheduled and
+  // flip the phase to done prematurely.
+  const busyRef = useRef(false)
+
   const run = useCallback(async () => {
+    if (busyRef.current) return
+    busyRef.current = true
     setPhase({ kind: 'busy' })
+    setBusyAt(Date.now())
     const result: RestartApiResult = await requestRestart('webui-button')
     if (result.status === 'already-scheduled') {
+      busyRef.current = false
       setPhase({ kind: 'done' })
       // already in flight — tie into the reconnect probe anyway
     } else if (result.status === 'scheduled') {
@@ -258,18 +288,22 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       // can reach the origin again — waitForRestart makes the probe resolve
       // only after a real down-then-up cycle, not against the pre-restart
       // process still being alive during the scheduling delay.
-      const reconnected = await waitForReconnect(45000, true)
+      const reconnected = await waitForReconnect(20000, true)
       // Main flow completed (card shown & auto-dismissed) — clear the reload
       // fallback marker so a later page load does not re-show a stale card.
       try { sessionStorage.removeItem('dsh-restart-pending') } catch { /* ignore */ }
       setPhase(reconnected ? { kind: 'done' } : { kind: 'failed', message: t('restart.failedHint') })
     } else if (result.status === 'forbidden') {
+      busyRef.current = false
       setPhase({ kind: 'denied' })
     } else if (result.status === 'suppressed') {
+      busyRef.current = false
       setPhase({ kind: 'failed', message: t('restart.suppressed') })
     } else if (result.status === 'unsupported') {
+      busyRef.current = false
       setPhase({ kind: 'failed', message: t('restart.unsupported') })
     } else {
+      busyRef.current = false
       setPhase({ kind: 'failed', message: result.message })
     }
     // Auto-dismiss the result dialog after a beat (long enough to read the
@@ -321,7 +355,18 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
           </>
         )}
         {phase.kind === 'busy' && (
-          <p style={titleStyle}>{t('restart.busy')}</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <SpinnerGlyph size={18} />
+            <div>
+              <p style={titleStyle}>{t('restart.busy')}</p>
+              {busyAt > 0 && Date.now() - busyAt > 15000 && (
+                <p style={hintStyle}>{t('restart.busySlow')}</p>
+              )}
+              {busyAt > 0 && Date.now() - busyAt > 5000 && Date.now() - busyAt <= 15000 && (
+                <p style={hintStyle}>{t('restart.busyWait')}</p>
+              )}
+            </div>
+          </div>
         )}
         {phase.kind === 'done' && (
           <div style={successCardStyle} role="status">
