@@ -31,6 +31,8 @@ export type RestartDshKey =
   | 'restart.cancel'
   | 'restart.proceed'
   | 'restart.busy'
+  | 'restart.busyWait'
+  | 'restart.busySlow'
   | 'restart.done'
   | 'restart.denied'
   | 'restart.failedHint'
@@ -45,6 +47,8 @@ export const en: Record<RestartDshKey, string> = {
   'restart.cancel': 'Cancel',
   'restart.proceed': 'Restart',
   'restart.busy': 'Restarting… the page will reconnect automatically.',
+  'restart.busyWait': 'Still restarting, please wait…',
+  'restart.busySlow': 'Taking longer than usual — if the page does not recover, refresh it.',
   'restart.done': 'Reconnected. The service restarted successfully.',
   'restart.denied': 'Restart is only available from this machine (loopback).',
   'restart.failedHint': 'If the service does not come back, run: systemctl --user status dsh-web',
@@ -60,6 +64,8 @@ export const zh: Record<RestartDshKey, string> = {
   'restart.cancel': '取消',
   'restart.proceed': '重启',
   'restart.busy': '正在重启…页面将自动重连。',
+  'restart.busyWait': '仍在重启，请稍候…',
+  'restart.busySlow': '耗时超出预期——若页面长时间未恢复，请刷新页面。',
   'restart.done': '已重连，服务重启成功。',
   'restart.denied': '重启仅限本机访问（loopback）。',
   'restart.failedHint': '若服务未恢复，请手动执行：systemctl --user status dsh-web',

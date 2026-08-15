@@ -14,7 +14,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
         'restart-dsh': RestartDshKey;
     }
 }
-export type RestartDshKey = 'restart.label' | 'restart.confirm.title' | 'restart.confirm.body' | 'restart.cancel' | 'restart.proceed' | 'restart.busy' | 'restart.done' | 'restart.denied' | 'restart.failedHint' | 'restart.suppressed' | 'restart.unsupported';
+export type RestartDshKey = 'restart.label' | 'restart.confirm.title' | 'restart.confirm.body' | 'restart.cancel' | 'restart.proceed' | 'restart.busy' | 'restart.busyWait' | 'restart.busySlow' | 'restart.done' | 'restart.denied' | 'restart.failedHint' | 'restart.suppressed' | 'restart.unsupported';
 /** English dictionary (key-set source of truth). */
 export declare const en: Record<RestartDshKey, string>;
 /** Simplified Chinese dictionary. */
