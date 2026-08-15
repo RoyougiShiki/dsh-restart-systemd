@@ -54,6 +54,8 @@ export function RestartGlyph({ size = 16 }: { size?: number }) {
   )
 }
 
+// Visual state (background/color/hover) lives in the injected `.dsh-restart-trigger`
+// stylesheet — inline styles would out-prioritise the :hover rules.
 const triggerStyle: CSSProperties = {
   flex: 'none',
   display: 'inline-flex',
@@ -64,10 +66,7 @@ const triggerStyle: CSSProperties = {
   border: 'none',
   borderRadius: '50%',
   padding: 0,
-  background: 'transparent',
-  color: 'var(--dsw-alias-label-secondary)',
   cursor: 'pointer',
-  transition: 'background-color 120ms ease, color 120ms ease',
 }
 // Collapsed 56px rail: keep the same 36x36 round glyph as the wide seat so
 // the restart button stays visually identical to the phone icon next to it
@@ -157,7 +156,7 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     const style = document.createElement('style')
     style.id = 'dsh-restart-css'
     style.textContent = [
-      '.dsh-restart-trigger{transition:background-color 120ms ease,color 120ms ease,box-shadow 120ms ease}',
+      '.dsh-restart-trigger{background:transparent;color:var(--dsw-alias-label-secondary);transition:background-color 120ms ease,color 120ms ease,box-shadow 120ms ease}',
       '.dsh-restart-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
       '.dsh-restart-trigger:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
       '.dsh-restart-trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-bg-layer-2),0 0 0 4px var(--dsw-alias-brand-primary);outline:none}',
@@ -295,53 +294,62 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     </button>
   )
 
+  const dialog = open && createPortal((
+    <div style={overlayStyle} role="presentation">
+      <div style={maskStyle} aria-hidden="true" onClick={close} />
+      <div style={dialogStyle} role="dialog" aria-modal="true" aria-label={label}>
+        {phase.kind === 'confirming' && (
+          <>
+            <p style={titleStyle}>{t('restart.confirm.title')}</p>
+            <p style={bodyStyle}>{t('restart.confirm.body')}</p>
+            <div style={actionsStyle}>
+              <button type="button" style={cancelStyle} onClick={close}>{t('restart.cancel')}</button>
+              <button type="button" style={proceedStyle} onClick={confirm}>{t('restart.proceed')}</button>
+            </div>
+          </>
+        )}
+        {phase.kind === 'busy' && (
+          <p style={titleStyle}>{t('restart.busy')}</p>
+        )}
+        {phase.kind === 'done' && (
+          <div style={successCardStyle} role="status">
+            <CheckGlyph size={18} />
+            <div>
+              <p style={successTitleStyle}>{t('restart.done')}</p>
+              <p style={successSubStyle}>DeepSeek Harness</p>
+            </div>
+          </div>
+        )}
+        {phase.kind === 'denied' && (
+          <p style={errorStyle}>{t('restart.denied')}</p>
+        )}
+        {phase.kind === 'failed' && (
+          <>
+            <p style={errorStyle}>{phase.message}</p>
+            <p style={hintStyle}>{t('restart.failedHint')}</p>
+          </>
+        )}
+      </div>
+    </div>
+  ), document.body)
+
   // Rail + host found: render inside the remote-control stack so the restart
-  // icon lines up vertically under the phone/update icons.
+  // icon lines up vertically under the phone/update icons. The confirm dialog
+  // must render here too — returning only the trigger would swallow it.
   if (!wide && railHost) {
-    return createPortal(trigger, railHost)
+    return createPortal(
+      <>
+        {trigger}
+        {dialog}
+      </>,
+      railHost,
+    )
   }
 
   return (
     <>
       {trigger}
-      {open && createPortal((
-        <div style={overlayStyle} role="presentation">
-          <div style={maskStyle} aria-hidden="true" onClick={close} />
-          <div style={dialogStyle} role="dialog" aria-modal="true" aria-label={label}>
-            {phase.kind === 'confirming' && (
-              <>
-                <p style={titleStyle}>{t('restart.confirm.title')}</p>
-                <p style={bodyStyle}>{t('restart.confirm.body')}</p>
-                <div style={actionsStyle}>
-                  <button type="button" style={cancelStyle} onClick={close}>{t('restart.cancel')}</button>
-                  <button type="button" style={proceedStyle} onClick={confirm}>{t('restart.proceed')}</button>
-                </div>
-              </>
-            )}
-            {phase.kind === 'busy' && (
-              <p style={titleStyle}>{t('restart.busy')}</p>
-            )}
-            {phase.kind === 'done' && (
-              <div style={successCardStyle} role="status">
-                <CheckGlyph size={18} />
-                <div>
-                  <p style={successTitleStyle}>{t('restart.done')}</p>
-                  <p style={successSubStyle}>DeepSeek Harness</p>
-                </div>
-              </div>
-            )}
-            {phase.kind === 'denied' && (
-              <p style={errorStyle}>{t('restart.denied')}</p>
-            )}
-            {phase.kind === 'failed' && (
-              <>
-                <p style={errorStyle}>{phase.message}</p>
-                <p style={hintStyle}>{t('restart.failedHint')}</p>
-              </>
-            )}
-          </div>
-        </div>
-      ), document.body)}
+      {dialog}
     </>
   )
 }
