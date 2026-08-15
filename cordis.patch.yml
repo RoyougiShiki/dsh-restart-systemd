@@ -1,0 +1,15 @@
+# dsh-restart-systemd bundle patch: inserts the dual-face plugin row into the
+# web profile roster. Applied as a profile bundle layer (the `dsh.bundle.patch`
+# manifest field); install with `dsh plugin --profile web add /tmp/dsh-restart-systemd`
+# (or add the package to the profile's bundle list).
+#
+# The row is a bare plugin by package name: the node half (exports ".") runs in
+# the host process (loopback-fenced /api/restart-dsh route + /restart command +
+# restart-recover + flag/single-flight state under $DSH_HOME), and the
+# `dsh.client` declaration in package.json makes the browser half (exports
+# "./client", served at /plugins/ui-dsh-restart-systemd/client.js) load in the
+# web GUI and mount the sidebar-footer restart trigger next to the remote-web-ui
+# phone icon.
+- insert:
+    - id: ui-dsh-restart-systemd
+      name: dsh-restart-systemd
