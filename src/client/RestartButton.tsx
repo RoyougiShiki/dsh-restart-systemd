@@ -267,11 +267,12 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     } else {
       setPhase({ kind: 'failed', message: result.message })
     }
-    // Auto-dismiss the result dialog after a beat.
+    // Auto-dismiss the result dialog after a beat (long enough to read the
+    // success card).
     timer.current = window.setTimeout(() => {
       setOpen(false)
       setPhase({ kind: 'idle' })
-    }, 3500)
+    }, 5000)
   }, [t])
 
   const confirm = useCallback(() => {

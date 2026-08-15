@@ -33,5 +33,5 @@ export declare function requestRestart(reason?: string): Promise<RestartApiResul
  * @param timeoutMs - how long to keep probing.
  * @returns true when the origin became reachable.
  */
-export declare function waitForReconnect(timeoutMs?: number): Promise<boolean>;
+export declare function waitForReconnect(timeoutMs?: number, initialWaitMs?: number): Promise<boolean>;
 //# sourceMappingURL=api.d.ts.map
