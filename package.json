@@ -87,7 +87,6 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b --build --pretty false",
-    "prepare": "npm run build"
+    "typecheck": "tsc -b --build --pretty false"
   }
 }
