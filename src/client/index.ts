@@ -2,8 +2,7 @@
  * dsh-restart-systemd — browser half. Registers the `restart-dsh` dictionaries
  * and mounts the sidebar-footer restart trigger into the official
  * `sidebar.footer.action` seat (the slot beside the Settings trigger where
- * remote-web-ui's phone icon lives), plus a fallback entry into the
- * conversation-session header utilities band when present. Follows the
+ * remote-web-ui's phone icon lives). Follows the
  * remote-web-ui injection pattern: `ctx.slots.inject(key, () => ctx.slots.register(...))`.
  * @module dsh-restart-systemd/client
  */
@@ -87,19 +86,5 @@ export function apply(ctx: ClientContext): void {
       order: 20,
       locale: NS,
     }, RestartButton),
-  )
-
-  // Fallback / alternate seat: the conversation-session header utilities band.
-  // That seat passes its own owner props (no `wide`), so wrap the button with
-  // wide=true to avoid dropping into the rail variant inside the header.
-  ctx.slots.inject('conversation.session.header.utilities', () =>
-    ctx.slots.register({
-      name: 'conversation.session.header.utilities',
-      id: 'dsh-restart-systemd',
-      order: 90,
-      locale: NS,
-    }, (props: { wide?: boolean; t: TranslateNS<'restart-dsh'> }) =>
-      createElement(RestartButton, { wide: props.wide ?? true, t: props.t }),
-    ),
   )
 }
