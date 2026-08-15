@@ -115,7 +115,27 @@ const buttonBase: CSSProperties = {
 }
 const cancelStyle: CSSProperties = { ...buttonBase, borderColor: 'var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', background: 'transparent' }
 const proceedStyle: CSSProperties = { ...buttonBase, background: 'var(--dsw-alias-label-primary)', color: 'var(--dsw-alias-bg-layer-3)' }
-const successStyle: CSSProperties = { margin: '4px 0 0', color: 'var(--dsw-alias-state-success-primary, #3fb950)' }
+const successCardStyle: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 10,
+  margin: '4px 0 0',
+  padding: '10px 14px',
+  borderRadius: 12,
+  background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary, #3fb950) 12%, transparent)',
+  border: '1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary, #3fb950) 28%, transparent)',
+}
+const successTitleStyle: CSSProperties = { margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
+const successSubStyle: CSSProperties = { margin: '2px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' }
+
+function CheckGlyph({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
+      <circle cx="8" cy="8" r="7" fill="color-mix(in srgb, var(--dsw-alias-state-success-primary, #3fb950) 18%, transparent)" />
+      <path d="M4.5 8.2l2.3 2.3 4.7-5" stroke="var(--dsw-alias-state-success-primary, #3fb950)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
 const errorStyle: CSSProperties = { margin: '4px 0 0', color: 'var(--dsw-alias-label-error)' }
 const hintStyle: CSSProperties = { margin: '8px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }
 
@@ -130,10 +150,41 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   const [railHost, setRailHost] = useState<HTMLElement | null>(null)
   const timer = useRef<number | undefined>(undefined)
 
+  // Hover/active/focus styles: inline styles cannot express :hover, so inject
+  // one stylesheet (idempotent) matching the neighbouring remote-control icon.
+  useEffect(() => {
+    if (document.getElementById('dsh-restart-css')) return
+    const style = document.createElement('style')
+    style.id = 'dsh-restart-css'
+    style.textContent = [
+      '.dsh-restart-trigger{transition:background-color 120ms ease,color 120ms ease,box-shadow 120ms ease}',
+      '.dsh-restart-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
+      '.dsh-restart-trigger:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}',
+      '.dsh-restart-trigger:focus-visible{box-shadow:0 0 0 2px var(--dsw-alias-bg-layer-2),0 0 0 4px var(--dsw-alias-brand-primary);outline:none}',
+    ].join('\n')
+    document.head.appendChild(style)
+  }, [])
+
   // Collapsed 56px rail: join the same vertical stack as the neighbouring
   // remote-control entry (phone/update icons) instead of taking a second
   // horizontal slot in the footer row. Locate that stack by the phone
   // trigger's aria-label, fall back to plain rendering when absent.
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+
+  // When rendered through a portal into the neighbour's React tree, React's
+  // synthetic events never reach our root — bind a native listener instead.
+  useEffect(() => {
+    if (wide || !railHost) return
+    const el = triggerRef.current
+    if (!el) return
+    const handler = () => {
+      setPhase({ kind: 'confirming' })
+      setOpen(true)
+    }
+    el.addEventListener('click', handler)
+    return () => el.removeEventListener('click', handler)
+  }, [wide, railHost])
+
   useEffect(() => {
     if (wide) {
       setRailHost(null)
@@ -229,7 +280,9 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
 
   const trigger = (
     <button
+      ref={triggerRef}
       type="button"
+      className="dsh-restart-trigger"
       style={wide ? triggerStyle : triggerRailStyle}
       aria-label={label}
       title={label}
@@ -269,7 +322,13 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
               <p style={titleStyle}>{t('restart.busy')}</p>
             )}
             {phase.kind === 'done' && (
-              <p style={successStyle}>{t('restart.done')}</p>
+              <div style={successCardStyle} role="status">
+                <CheckGlyph size={18} />
+                <div>
+                  <p style={successTitleStyle}>{t('restart.done')}</p>
+                  <p style={successSubStyle}>DeepSeek Harness</p>
+                </div>
+              </div>
             )}
             {phase.kind === 'denied' && (
               <p style={errorStyle}>{t('restart.denied')}</p>
