@@ -69,11 +69,12 @@ const triggerStyle: CSSProperties = {
   cursor: 'pointer',
   transition: 'background-color 120ms ease, color 120ms ease',
 }
+// Collapsed 56px rail: keep the same 36x36 round glyph as the wide seat so
+// the restart button stays visually identical to the phone icon next to it
+// (footer action slots stack vertically in rail mode — no full-width block).
 const triggerRailStyle: CSSProperties = {
   ...triggerStyle,
-  width: '100%',
-  height: 40,
-  borderRadius: 10,
+  height: 36,
 }
 
 const overlayStyle: CSSProperties = {
