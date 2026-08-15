@@ -49,9 +49,13 @@ export async function requestRestart(reason = 'webui-button'): Promise<RestartAp
  * @param timeoutMs - how long to keep probing.
  * @returns true when the origin became reachable.
  */
-export function waitForReconnect(timeoutMs = 45000, waitForRestart = false): Promise<boolean> {
+export function waitForReconnect(timeoutMs = 20000, waitForRestart = false): Promise<boolean> {
   const started = Date.now()
   const deadline = started + timeoutMs
+  // Restart is scheduled with ~3s delay; any 200 observed after this point is
+  // the restarted process (the pre-restart process would have died by then),
+  // so it counts as reconnected even if the short down-window was missed.
+  const RESTART_OBSERVED_MS = 4000
   return new Promise((resolve) => {
     // sawDown flips once a probe fails — that is the moment the process is
     // actually going down (after the ~3s scheduling delay). Only a success
@@ -71,7 +75,11 @@ export function waitForReconnect(timeoutMs = 45000, waitForRestart = false): Pro
         const res = await fetch('/', { method: 'GET', signal: controller.signal })
         window.clearTimeout(to)
         if (res.ok) {
-          if (!waitForRestart || sawDown) {
+          if (
+            !waitForRestart ||
+            sawDown ||
+            Date.now() - started >= RESTART_OBSERVED_MS
+          ) {
             resolve(true)
             return
           }
@@ -79,7 +87,8 @@ export function waitForReconnect(timeoutMs = 45000, waitForRestart = false): Pro
       } catch {
         sawDown = true
       }
-      window.setTimeout(() => void probe(), 1000)
+      // Dense probing (~350ms) so the short WSL down-window is not missed.
+      window.setTimeout(() => void probe(), 350)
     }
     void probe()
   })
