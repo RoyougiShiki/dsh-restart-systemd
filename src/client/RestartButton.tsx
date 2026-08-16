@@ -197,10 +197,6 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   // trigger's aria-label, fall back to plain rendering when absent.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
 
-  const [open, setOpen] = useState(false)
-
-  const [open, setOpen] = useState(false)
-
   useEffect(() => () => {
     if (timer.current !== undefined) window.clearTimeout(timer.current)
   }, [])
