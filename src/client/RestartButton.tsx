@@ -161,6 +161,7 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   const timer = useRef<number | undefined>(undefined)
   const cancelRef = useRef<HTMLButtonElement | null>(null)
   const proceedRef = useRef<HTMLButtonElement | null>(null)
+  const actionsRef = useRef<{ close: () => void; confirm: () => void }>({ close: () => {}, confirm: () => {} })
 
   // Re-render every second while busy so the staged copy can switch.
   useEffect(() => {
@@ -329,22 +330,31 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     void run()
   }, [run])
 
-  // Some DSH slot/portal compositions (especially the collapsed rail) can
-  // prevent React synthetic events from reaching this component. Bind native
-  // listeners on the dialog buttons as a belt-and-braces fallback.
+  // Keep the latest actions in a ref so a single document-level listener can
+  // always reach the current close/confirm callbacks (survives reconnects and
+  // DOM replacement without needing per-button listeners).
   useEffect(() => {
-    if (!open || phase.kind !== 'confirming') return
-    const cancel = cancelRef.current
-    const proceed = proceedRef.current
-    const onCancel = (e: Event) => { e.preventDefault(); e.stopPropagation(); close() }
-    const onProceed = (e: Event) => { e.preventDefault(); e.stopPropagation(); confirm() }
-    cancel?.addEventListener('click', onCancel)
-    proceed?.addEventListener('click', onProceed)
-    return () => {
-      cancel?.removeEventListener('click', onCancel)
-      proceed?.removeEventListener('click', onProceed)
+    actionsRef.current = { close, confirm }
+  })
+
+  // Some DSH slot/portal compositions (especially the collapsed rail) can
+  // prevent React synthetic events from reaching this component. Use
+  // document-level delegation keyed on data attributes so the dialog buttons
+  // work even after the page auto-reconnects without a full reload.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null
+      const el = target?.closest?.('[data-dsh-restart-action]') as HTMLElement | null
+      if (!el) return
+      e.preventDefault()
+      e.stopPropagation()
+      const action = el.getAttribute('data-dsh-restart-action')
+      if (action === 'cancel') actionsRef.current.close()
+      else if (action === 'proceed') actionsRef.current.confirm()
     }
-  }, [open, phase.kind, close, confirm])
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
+  }, [])
 
   const label = t('restart.label')
 
@@ -374,8 +384,8 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
             <p style={titleStyle}>{t('restart.confirm.title')}</p>
             <p style={bodyStyle}>{t('restart.confirm.body')}</p>
             <div style={actionsStyle}>
-              <button ref={cancelRef} type="button" style={cancelStyle} onClick={close}>{t('restart.cancel')}</button>
-              <button ref={proceedRef} type="button" style={proceedStyle} onClick={confirm}>{t('restart.proceed')}</button>
+              <button ref={cancelRef} type="button" data-dsh-restart-action="cancel" style={cancelStyle} onClick={close}>{t('restart.cancel')}</button>
+              <button ref={proceedRef} type="button" data-dsh-restart-action="proceed" style={proceedStyle} onClick={confirm}>{t('restart.proceed')}</button>
             </div>
           </>
         )}
