@@ -334,16 +334,11 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       disabled={phase.kind === 'busy'}
       title={phase.kind === 'busy' ? t('restart.busy') : label}
       onClick={() => {
-        // Use the native confirm dialog for the confirmation step: the custom
-        // styled dialog has proven unreliable after auto-reconnect (clicks can
-        // be swallowed by stale/overlapping portals). Native confirm is always
-        // responsive; the styled dialog is still used for busy/done states.
-        if (window.confirm(t('restart.confirm.body'))) {
-          // Show the busy overlay immediately; run() performs the restart and
-          // then forces a full page reload so the new client bundle loads.
-          setOpen(true)
-          void run()
-        }
+        // Custom styled confirm. The forced full-page reload after restart
+        // ensures the new client bundle is loaded, so this dialog should no
+        // longer suffer the stale-JS/portal problems seen before.
+        setPhase({ kind: 'confirming' })
+        setOpen(true)
       }}
     >
       {phase.kind === 'busy' ? <SpinnerGlyph size={wide ? 16 : 18} /> : <RestartGlyph size={wide ? 16 : 18} />}
