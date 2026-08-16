@@ -365,7 +365,9 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       className="dsh-restart-trigger"
       style={wide ? triggerStyle : triggerRailStyle}
       aria-label={label}
-      title={label}
+      aria-busy={phase.kind === 'busy' || undefined}
+      disabled={phase.kind === 'busy'}
+      title={phase.kind === 'busy' ? t('restart.busy') : label}
       onClick={() => {
         // Use the native confirm dialog for the confirmation step: the custom
         // styled dialog has proven unreliable after auto-reconnect (clicks can
@@ -380,7 +382,7 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
         }
       }}
     >
-      <RestartGlyph size={wide ? 16 : 18} />
+      {phase.kind === 'busy' ? <SpinnerGlyph size={wide ? 16 : 18} /> : <RestartGlyph size={wide ? 16 : 18} />}
     </button>
   )
 
