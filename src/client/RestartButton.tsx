@@ -367,8 +367,14 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       aria-label={label}
       title={label}
       onClick={() => {
-        setPhase({ kind: 'confirming' })
-        setOpen(true)
+        // Use the native confirm dialog for the confirmation step: the custom
+        // styled dialog has proven unreliable after auto-reconnect (clicks can
+        // be swallowed by stale/overlapping portals). Native confirm is always
+        // responsive; the styled dialog is still used for busy/done states.
+        if (window.confirm(t('restart.confirm.body'))) {
+          setOpen(true)
+          void run()
+        }
       }}
     >
       <RestartGlyph size={wide ? 16 : 18} />
