@@ -372,7 +372,10 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
         // be swallowed by stale/overlapping portals). Native confirm is always
         // responsive; the styled dialog is still used for busy/done states.
         if (window.confirm(t('restart.confirm.body'))) {
-          setOpen(true)
+          // Do not open the custom dialog here: after an auto-reconnect it has
+          // shown stale/empty overlays that swallow clicks. The native confirm
+          // is the whole confirmation UI; run() performs the restart and the
+          // page reconnects on its own.
           void run()
         }
       }}
