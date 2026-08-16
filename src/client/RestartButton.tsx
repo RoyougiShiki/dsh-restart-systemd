@@ -394,12 +394,15 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   // icon lines up vertically under the phone/update icons. The confirm dialog
   // must render here too — returning only the trigger would swallow it.
   if (!wide && railHost) {
-    return createPortal(
+    // Keep the confirm dialog on document.body instead of nesting it inside the
+    // neighbour's portal root; otherwise React synthetic events on the dialog
+    // buttons can fail to reach this component (the restart button appears to
+    // "do nothing" after confirming).
+    return (
       <>
-        {trigger}
+        {createPortal(trigger, railHost)}
         {dialog}
-      </>,
-      railHost,
+      </>
     )
   }
 
