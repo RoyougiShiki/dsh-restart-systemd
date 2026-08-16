@@ -159,6 +159,8 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   const [busyAt, setBusyAt] = useState(0)
   const [, setBusyTick] = useState(0)
   const timer = useRef<number | undefined>(undefined)
+  const cancelRef = useRef<HTMLButtonElement | null>(null)
+  const proceedRef = useRef<HTMLButtonElement | null>(null)
 
   // Re-render every second while busy so the staged copy can switch.
   useEffect(() => {
@@ -321,6 +323,23 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     void run()
   }, [run])
 
+  // Some DSH slot/portal compositions (especially the collapsed rail) can
+  // prevent React synthetic events from reaching this component. Bind native
+  // listeners on the dialog buttons as a belt-and-braces fallback.
+  useEffect(() => {
+    if (!open || phase.kind !== 'confirming') return
+    const cancel = cancelRef.current
+    const proceed = proceedRef.current
+    const onCancel = (e: Event) => { e.preventDefault(); e.stopPropagation(); close() }
+    const onProceed = (e: Event) => { e.preventDefault(); e.stopPropagation(); confirm() }
+    cancel?.addEventListener('click', onCancel)
+    proceed?.addEventListener('click', onProceed)
+    return () => {
+      cancel?.removeEventListener('click', onCancel)
+      proceed?.removeEventListener('click', onProceed)
+    }
+  }, [open, phase.kind, close, confirm])
+
   const label = t('restart.label')
 
   const trigger = (
@@ -349,8 +368,8 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
             <p style={titleStyle}>{t('restart.confirm.title')}</p>
             <p style={bodyStyle}>{t('restart.confirm.body')}</p>
             <div style={actionsStyle}>
-              <button type="button" style={cancelStyle} onClick={close}>{t('restart.cancel')}</button>
-              <button type="button" style={proceedStyle} onClick={confirm}>{t('restart.proceed')}</button>
+              <button ref={cancelRef} type="button" style={cancelStyle} onClick={close}>{t('restart.cancel')}</button>
+              <button ref={proceedRef} type="button" style={proceedStyle} onClick={confirm}>{t('restart.proceed')}</button>
             </div>
           </>
         )}
