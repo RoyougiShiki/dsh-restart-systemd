@@ -198,17 +198,23 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   const triggerRef = useRef<HTMLButtonElement | null>(null)
 
   // When rendered through a portal into the neighbour's React tree, React's
-  // synthetic events never reach our root — bind a native listener instead.
+  // synthetic events never reach our root — and after a service reconnect the
+  // neighbour may replace the trigger DOM node, orphaning a direct listener.
+  // Use document-level delegation keyed on the trigger class so it survives
+  // DOM replacement until a full page reload.
   useEffect(() => {
     if (wide || !railHost) return
-    const el = triggerRef.current
-    if (!el) return
-    const handler = () => {
-      setPhase({ kind: 'confirming' })
-      setOpen(true)
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null
+      if (target?.closest?.('.dsh-restart-trigger')) {
+        e.preventDefault()
+        e.stopPropagation()
+        setPhase({ kind: 'confirming' })
+        setOpen(true)
+      }
     }
-    el.addEventListener('click', handler)
-    return () => el.removeEventListener('click', handler)
+    document.addEventListener('click', handler)
+    return () => document.removeEventListener('click', handler)
   }, [wide, railHost])
 
   useEffect(() => {
