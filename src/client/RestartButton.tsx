@@ -256,10 +256,17 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       // only after a real down-then-up cycle, not against the pre-restart
       // process still being alive during the scheduling delay.
       const reconnected = await waitForReconnect(20000, true)
-      // Main flow completed (card shown & auto-dismissed) — clear the reload
-      // fallback marker so a later page load does not re-show a stale card.
+      // Main flow completed — clear the reload fallback marker so a later page
+      // load does not re-show a stale card.
       try { sessionStorage.removeItem('dsh-restart-pending') } catch { /* ignore */ }
-      setPhase(reconnected ? { kind: 'done' } : { kind: 'failed', message: t('restart.failedHint') })
+      if (reconnected) {
+        setPhase({ kind: 'done' })
+        // Force a full page reload: auto-reconnect alone keeps running the old
+        // pre-restart JS bundle, which is why fixes only appear after manual F5.
+        window.setTimeout(() => window.location.reload(), 800)
+      } else {
+        setPhase({ kind: 'failed', message: t('restart.failedHint') })
+      }
     } else if (result.status === 'forbidden') {
       busyRef.current = false
       setPhase({ kind: 'denied' })
@@ -332,10 +339,9 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
         // be swallowed by stale/overlapping portals). Native confirm is always
         // responsive; the styled dialog is still used for busy/done states.
         if (window.confirm(t('restart.confirm.body'))) {
-          // Do not open the custom dialog here: after an auto-reconnect it has
-          // shown stale/empty overlays that swallow clicks. The native confirm
-          // is the whole confirmation UI; run() performs the restart and the
-          // page reconnects on its own.
+          // Show the busy overlay immediately; run() performs the restart and
+          // then forces a full page reload so the new client bundle loads.
+          setOpen(true)
           void run()
         }
       }}
