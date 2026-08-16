@@ -155,7 +155,6 @@ const hintStyle: CSSProperties = { margin: '8px 0 0', fontSize: 12, color: 'var(
 export function RestartButton({ wide, t }: RestartButtonProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   const [open, setOpen] = useState(false)
-  const [railHost, setRailHost] = useState<HTMLElement | null>(null)
   const [busyAt, setBusyAt] = useState(0)
   const [, setBusyTick] = useState(0)
   const timer = useRef<number | undefined>(undefined)
@@ -198,50 +197,9 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   // trigger's aria-label, fall back to plain rendering when absent.
   const triggerRef = useRef<HTMLButtonElement | null>(null)
 
-  // When rendered through a portal into the neighbour's React tree, React's
-  // synthetic events never reach our root — and after a service reconnect the
-  // neighbour may replace the trigger DOM node, orphaning a direct listener.
-  // Use document-level delegation keyed on the trigger class so it survives
-  // DOM replacement until a full page reload.
-  useEffect(() => {
-    if (wide || !railHost) return
-    const handler = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null
-      if (target?.closest?.('.dsh-restart-trigger')) {
-        e.preventDefault()
-        e.stopPropagation()
-        setPhase({ kind: 'confirming' })
-        setOpen(true)
-      }
-    }
-    document.addEventListener('click', handler)
-    return () => document.removeEventListener('click', handler)
-  }, [wide, railHost])
+  const [open, setOpen] = useState(false)
 
-  useEffect(() => {
-    if (wide) {
-      setRailHost(null)
-      return
-    }
-    const findHost = (): HTMLElement | null => {
-      const phone = Array.from(document.querySelectorAll('button')).find(b => {
-        const l = b.getAttribute('aria-label') || ''
-        return l.includes('移动端远程控制') || l.includes('Remote') || l.includes('远程')
-      })
-      return phone?.parentElement ?? null
-    }
-    setRailHost(findHost())
-    let tries = 0
-    const iv = window.setInterval(() => {
-      tries += 1
-      const h = findHost()
-      if (h || tries > 10) {
-        setRailHost(h)
-        window.clearInterval(iv)
-      }
-    }, 500)
-    return () => window.clearInterval(iv)
-  }, [wide])
+  const [open, setOpen] = useState(false)
 
   useEffect(() => () => {
     if (timer.current !== undefined) window.clearTimeout(timer.current)
@@ -436,22 +394,9 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     </div>
   ), document.body)
 
-  // Rail + host found: render inside the remote-control stack so the restart
-  // icon lines up vertically under the phone/update icons. The confirm dialog
-  // must render here too — returning only the trigger would swallow it.
-  if (!wide && railHost) {
-    // Keep the confirm dialog on document.body instead of nesting it inside the
-    // neighbour's portal root; otherwise React synthetic events on the dialog
-    // buttons can fail to reach this component (the restart button appears to
-    // "do nothing" after confirming).
-    return (
-      <>
-        {createPortal(trigger, railHost)}
-        {dialog}
-      </>
-    )
-  }
-
+  // Always render in our own slot/root. Portaling the trigger into the
+  // neighbour's remote-control stack caused unreliable events/state updates
+  // after reconnect, so we accept the default slot position for reliability.
   return (
     <>
       {trigger}
