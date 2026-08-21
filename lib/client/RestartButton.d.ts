@@ -5,7 +5,8 @@
  * Settings trigger — where remote-web-ui's phone icon lives), so it appears
  * next to the phone icon in the dark-theme footer row. Behavior:
  *  - wide column  → an icon button sized to the settings rail;
- *  - collapsed 56px rail → a single square icon.
+ *  - collapsed 56px rail → a single square icon; the whole footer-action seat
+ *    is flipped to a centered vertical column while in rail mode.
  * On click it shows a confirm dialog (restarting drops in-flight agent work
  * which then auto-resumes), POSTs /api/restart-dsh, and reports state:
  * "already triggered", "reconnected", or a failure hint pointing at
