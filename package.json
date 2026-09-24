@@ -91,6 +91,8 @@
   "scripts": {
     "build": "tsc -b && node scripts/build-client.mjs",
     "typecheck": "tsc -b --build --pretty false",
-    "test": "npm run build && node scripts/verify-client.mjs"
+    "test": "npm run build && npm run test:client && npm run test:host",
+    "test:client": "node scripts/verify-client.mjs",
+    "test:host": "node scripts/verify-host.mjs"
   }
 }

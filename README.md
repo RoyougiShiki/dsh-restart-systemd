@@ -130,13 +130,21 @@ v0.2 起 devDependencies 对齐 **DSH 0.1.7-rc.1**（v0.1 编译于 0.1.0-rc.6�
 ## 验证
 
 ```bash
-npm test    # = npm run build && node scripts/verify-client.mjs（41 项检查）
+npm test          # = build + verify-client(41 项) + verify-host(17 项)
+npm run test:client
+npm run test:host
 ```
 
 `scripts/verify-client.mjs` 在没有浏览器、也不重启线上服务的前提下验三件事：
 1. **loader 接线**：按 DSH 加载器的方式 boot `lib/client/index.js`，断言注册的 slot / locale / `hooks.connectionState`，以及运行时 require 只有 `react`、`react-dom`、`react/jsx-runtime` 三个 seed word；
 2. **重启-刷新状态机**：`restartReloadDecision` 的全部分支，重点是「观察到真实断线之前的 `connected` 绝不触发刷新」（宿主在 ~3s 调度延迟内仍由重启前的进程应答）；
 3. **渲染 + 文案覆盖**：SSR 渲染组件，并断言源码里用到的每个 `t('restart.*')` 键在中英两本字典里都存在、且没有多余键。
+
+`scripts/verify-host.mjs` 盯住续接判定这条最危险的逻辑（两个方向都会坏：太激进 = 给正常结束的会话发多余 turn；太保守 = 中断的 turn 永远不续接）：
+1. **`lastTurnInterrupted` 全分支**：未闭合 turn / `interrupted` / `completed` / `aborted` / `blocked` / `error` / `max-tokens` / 空日志 / 日志不可读（兜底为续接）；
+2. **`arm()` 端到端**：只有「在快照里 **且** 最后 turn 确实被中断」的会话才会收到一条 `Continue.`，且该消息带本插件自有 source kind；正常结束或不在快照里的会话一条都不发。
+
+> 这套用例是有来历的：升级到 0.1.7-rc.1 后 `agent.session.events` 被 `snapshotEvents()` 取代，旧代码抛出的 TypeError 被 `try/catch` 吞掉，于是 `lastTurnInterrupted()` **对任何会话都返回 true**。实测把旧实现对着新 Session 形状跑，4/4 个「干净结束」用例全判成需要续接——即会给快照里每个会话都灌一条 `Continue.`。现在这条回归被上面的用例钉死。
 
 线上手工验收：
 
