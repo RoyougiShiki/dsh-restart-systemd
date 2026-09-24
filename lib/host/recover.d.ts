@@ -23,6 +23,13 @@
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { SessionId } from '@deepseek-ai/dsh-session';
+declare module '@deepseek-ai/dsh-llm' {
+    interface MessageSourceMap {
+        'dsh-restart-systemd': {
+            kind: 'dsh-restart-systemd';
+        };
+    }
+}
 /** The text of the auto-continue followup pushed to a resumed agent. */
 export declare const CONTINUE_TEXT = "Continue.";
 /** How long to keep listening after boot for matching agents before giving up. */
@@ -53,10 +60,11 @@ export declare class Recovery {
     /** Handle a fresh agent/created event during the recovery window. */
     private onAgent;
     /**
-     * Whether the agent's most recent turn was cut short: a `turn/end` with
-     * reason `interrupted`, or a `turn/start` with no subsequent clean
-     * `turn/end`. Reads from the agent's durable session event log (the live
-     * session projection exposes the last events).
+     * Whether the agent's most recent turn was cut short: a `turn/end` whose
+     * reason is the `interrupted` closer the agent loop appends for a
+     * crash-orphaned turn, or a `turn/start` with no subsequent `turn/end`.
+     * Reads the agent's durable session event log through the public
+     * `Session.snapshotEvents()` reader (the log itself is private).
      */
     private lastTurnInterrupted;
     private finish;

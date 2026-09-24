@@ -28,6 +28,16 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 
+// The harness's message-source vocabulary is a merge-extensible sum type with
+// no shared catch-all `plugin` kind: every producer declares its own `kind` in
+// its own module. Declaring ours is what lets the auto-continue message carry a
+// stable, greppable producer tag instead of masquerading as human input.
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'dsh-restart-systemd': { kind: 'dsh-restart-systemd' }
+  }
+}
+
 /** The text of the auto-continue followup pushed to a resumed agent. */
 export const CONTINUE_TEXT = 'Continue.'
 /** How long to keep listening after boot for matching agents before giving up. */
@@ -63,7 +73,12 @@ export class Recovery {
     if (this.armed) return () => undefined
     this.armed = true
     // Bind the listener once; the actual continue decisions happen in onAgent.
-    const detach = this.ctx.on('agent/created', (payload) => this.onAgent(payload.agent))
+    // The listener body is braced so it returns `undefined` (the event's
+    // declared return) rather than `void`.
+    const detach = this.ctx.on('agent/created', (payload) => {
+      this.onAgent(payload.agent)
+      return undefined
+    })
     void this.loadAndListen()
     return detach
   }
@@ -109,7 +124,7 @@ export class Recovery {
       agent.followup(
         createUserMessage({
           content: [{ type: 'text', text: CONTINUE_TEXT }],
-          source: { kind: 'plugin', plugin: 'dsh-restart-systemd' },
+          source: { kind: 'dsh-restart-systemd' },
         }),
       )
     } catch (error) {
@@ -121,29 +136,29 @@ export class Recovery {
   }
 
   /**
-   * Whether the agent's most recent turn was cut short: a `turn/end` with
-   * reason `interrupted`, or a `turn/start` with no subsequent clean
-   * `turn/end`. Reads from the agent's durable session event log (the live
-   * session projection exposes the last events).
+   * Whether the agent's most recent turn was cut short: a `turn/end` whose
+   * reason is the `interrupted` closer the agent loop appends for a
+   * crash-orphaned turn, or a `turn/start` with no subsequent `turn/end`.
+   * Reads the agent's durable session event log through the public
+   * `Session.snapshotEvents()` reader (the log itself is private).
    */
   private lastTurnInterrupted(agent: Agent): boolean {
     try {
-      // `agent.session.events` is an immutable snapshot of the durable log
-      // (restored after the restart). Scan it for how the last turn ended:
-      // `turn/start` never followed by a `turn/end` means an open turn was cut
-      // short mid-flight; otherwise the most recent `turn/end.reason` tells us.
+      // Scan the restored log for how the last turn ended: `turn/start` never
+      // followed by a `turn/end` means an open turn was cut short mid-flight;
+      // otherwise the most recent `turn/end.reason.kind` tells us.
       let sawOpenTurn = false
-      let lastReason: string | undefined
-      for (const event of agent.session.events) {
+      let lastKind: string | undefined
+      for (const event of agent.session.snapshotEvents()) {
         if (event.type === 'turn/end') {
           sawOpenTurn = false
-          lastReason = String((event.data as { reason?: unknown }).reason)
+          lastKind = event.data.reason.kind
         } else if (event.type === 'turn/start') {
           sawOpenTurn = true
         }
       }
       if (sawOpenTurn) return true // an open turn interrupted mid-flight
-      return lastReason === 'interrupted'
+      return lastKind === 'interrupted'
     } catch {
       // If the log is not inspectable, err toward resuming an id the snapshot
       // explicitly listed as running at click time — a safe default.

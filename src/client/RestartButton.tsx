@@ -7,10 +7,20 @@
  *  - wide column  → an icon button sized to the settings rail;
  *  - collapsed 56px rail → a single square icon; the whole footer-action seat
  *    is flipped to a centered vertical column while in rail mode.
- * On click it shows a confirm dialog (restarting drops in-flight agent work
- * which then auto-resumes), POSTs /api/restart-dsh, and reports state:
- * "already triggered", "reconnected", or a failure hint pointing at
- * `systemctl --user status dsh-web`.
+ * On click it shows a confirm dialog, POSTs /api/restart-dsh, and reports the
+ * host's answer ("already in flight", loopback denial, unsupported platform, …).
+ *
+ * ## Who owns the reconnect UX
+ *
+ * The plugin does NOT probe, poll, or render the outage itself. The client
+ * runtime's ConnectionController owns the connect/retry loop (exponential
+ * backoff, base 500ms → cap 10s) and publishes its lifecycle on
+ * `ctx.connection.state`; the official ConnectionIndicator renders it in the
+ * settings row of this same sidebar foot ("连接异常，点击立即重连" /
+ * "重新连接中" / "连接成功"), and clicking it forces an immediate retry. This
+ * component only *consumes* that state for one purpose the runtime cannot
+ * serve: a full page reload once the service is back, because the runtime
+ * reconnects the transport but keeps running the pre-restart client bundle.
  *
  * All styling rides the shell's design tokens (`--dsw-alias-*`), so it matches
  * the dark/light theme automatically. Inline `style` objects are used instead
@@ -23,22 +33,75 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { CSSProperties } from 'react'
-import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
-import { requestRestart, waitForReconnect, type RestartApiResult } from './api.ts'
+import type { ConnectionState } from '@deepseek-ai/dsh-client-connection/client'
+import type { PropsLocale, SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
+import { requestRestart, type RestartApiResult } from './api.ts'
+
+/**
+ * How long a scheduled restart may stay unconfirmed before the dialog reports
+ * a timeout. Generous: it covers the host's ~3s scheduling delay plus a WSL
+ * systemd unit restart, and the check only fires when the connection never
+ * came back at all.
+ */
+const PENDING_TIMEOUT_MS = 45_000
+/** How long a terminal result dialog stays up before dismissing itself. */
+const RESULT_DISMISS_MS = 6000
 
 /** Entry props: the footer seat's column state + the standard locale seat. */
 export interface RestartButtonProps extends PropsLocale<'restart-dsh'> {
   /** Whether the sidebar renders wide (false = 56px rail). */
   wide: boolean
+  /**
+   * Selector hook over the client runtime's connection lifecycle, bound by the
+   * slot renderer from this registration's injected `hooks` compartment. The
+   * plugin reads it to know when a restart it scheduled has actually completed
+   * — it never runs a probe of its own.
+   */
+  useConnectionState: SnapshotSelectorHook<ConnectionState | undefined>
 }
 
 type Phase =
   | { kind: 'idle' }
   | { kind: 'confirming' }
-  | { kind: 'busy' }        // request accepted, waiting for reconnect
-  | { kind: 'done' }        // reconnect observed
+  | { kind: 'pending' }     // host accepted; waiting for the service to come back
   | { kind: 'denied' }
   | { kind: 'failed'; message: string }
+
+/** What one connection-state transition means for the restart reload. */
+export interface ReloadDecision {
+  /** Reload the page now. */
+  reload: boolean
+  /** The outage flag to carry into the next transition. */
+  sawOutage: boolean
+}
+
+/**
+ * Decide what a connection-state transition means for a restart this page
+ * scheduled. Pure, so the guard that matters most — never reloading before the
+ * service has actually gone down — is testable without a browser.
+ *
+ * A `connected` reading only proves the origin answers; during the host's ~3s
+ * scheduling delay it still answers from the pre-restart process. The reload
+ * therefore requires the recovery *edge*: an observed outage first, then
+ * `connected`.
+ *
+ * @param state - the runtime's current connection lifecycle state.
+ * @param flags - whether this page scheduled a restart, and whether an outage
+ *   has already been observed since then.
+ * @returns whether to reload, and the outage flag for the next transition.
+ */
+export function restartReloadDecision(
+  state: ConnectionState | undefined,
+  flags: { scheduled: boolean; sawOutage: boolean },
+): ReloadDecision {
+  if (state === 'disconnected' || state === 'connecting') {
+    return { reload: false, sawOutage: true }
+  }
+  if (state === 'connected' && flags.scheduled && flags.sawOutage) {
+    return { reload: true, sawOutage: false }
+  }
+  return { reload: false, sawOutage: flags.sawOutage }
+}
 
 /** A restart glyph (refresh/arrow bicycle) matching the outline icon style. */
 export function RestartGlyph({ size = 16 }: { size?: number }) {
@@ -115,18 +178,6 @@ const buttonBase: CSSProperties = {
 }
 const cancelStyle: CSSProperties = { ...buttonBase, borderColor: 'var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', background: 'transparent' }
 const proceedStyle: CSSProperties = { ...buttonBase, background: 'var(--dsw-alias-label-primary)', color: 'var(--dsw-alias-bg-layer-3)' }
-const successCardStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 10,
-  margin: '4px 0 0',
-  padding: '10px 14px',
-  borderRadius: 12,
-  background: 'color-mix(in srgb, var(--dsw-alias-state-success-primary, #3fb950) 12%, transparent)',
-  border: '1px solid color-mix(in srgb, var(--dsw-alias-state-success-primary, #3fb950) 28%, transparent)',
-}
-const successTitleStyle: CSSProperties = { margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--dsw-alias-label-primary)' }
-const successSubStyle: CSSProperties = { margin: '2px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-secondary)' }
 
 function SpinnerGlyph({ size = 16 }: { size?: number }) {
   return (
@@ -137,51 +188,62 @@ function SpinnerGlyph({ size = 16 }: { size?: number }) {
   )
 }
 
-function CheckGlyph({ size = 16 }: { size?: number }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
-      <circle cx="8" cy="8" r="7" fill="color-mix(in srgb, var(--dsw-alias-state-success-primary, #3fb950) 18%, transparent)" />
-      <path d="M4.5 8.2l2.3 2.3 4.7-5" stroke="var(--dsw-alias-state-success-primary, #3fb950)" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
 const errorStyle: CSSProperties = { margin: '4px 0 0', color: 'var(--dsw-alias-label-error)' }
 const hintStyle: CSSProperties = { margin: '8px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }
 
 /**
  * Render the restart trigger + confirm dialog.
- * @param props - the footer seat props.
+ * @param props - the footer seat props plus the connection-state selector hook.
  * @returns the entry element tree.
  */
-export function RestartButton({ wide, t }: RestartButtonProps) {
+export function RestartButton({ wide, useConnectionState, t }: RestartButtonProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
   const [open, setOpen] = useState(false)
-  const [busyAt, setBusyAt] = useState(0)
-  const [, setBusyTick] = useState(0)
   const timer = useRef<number | undefined>(undefined)
   const cancelRef = useRef<HTMLButtonElement | null>(null)
   const proceedRef = useRef<HTMLButtonElement | null>(null)
   const actionsRef = useRef<{ close: () => void; confirm: () => void }>({ close: () => {}, confirm: () => {} })
 
-  // Re-render every second while busy so the staged copy can switch.
+  // True from the moment this page asked for a restart until the reload (or the
+  // timeout) settles it. Kept in a ref, not state: the reload decision is made
+  // inside the connection-state effect and must not re-run it.
+  const scheduledRef = useRef(false)
+  // Set once the runtime reports a lost generation. A later `connected` only
+  // counts as "the service is back" after an outage was actually observed —
+  // without this, a `connected` that arrives before the unit goes down would
+  // reload the page against the still-running pre-restart process.
+  const sawOutageRef = useRef(false)
+
+  const connectionState = useConnectionState((state) => state)
+
+  // Latest translate function, read by the timeout callback so that effect can
+  // depend on the phase alone (a `t` identity change must not restart the
+  // countdown).
+  const tRef = useRef(t)
   useEffect(() => {
-    if (phase.kind !== 'busy') return
-    const iv = window.setInterval(() => setBusyTick((n) => n + 1), 1000)
-    return () => window.clearInterval(iv)
-  }, [phase.kind])
+    tRef.current = t
+  })
+
+  // Debounce double-confirms: a second run() would hit already-scheduled and
+  // race the phase transitions.
+  const busyRef = useRef(false)
+
+  const clearTimer = useCallback(() => {
+    if (timer.current !== undefined) {
+      window.clearTimeout(timer.current)
+      timer.current = undefined
+    }
+  }, [])
 
   // Hover/active/focus styles: inline styles cannot express :hover, so inject
-  // one stylesheet (idempotent) matching the neighbouring remote-control icon.
+  // one stylesheet matching the neighbouring remote-control icon. Any earlier
+  // copy of this stylesheet is removed first, so a live-reconnected page that
+  // still holds the previous generation's <style> cannot end up with both rule
+  // sets applied.
   useEffect(() => {
-    // Versioned stylesheet id: a live-reconnected page may still hold an old
-    // injected <style> (same id check would skip the new rules and the button
-    // would fall back to the browser default background). Remove all known
-    // prior versions, then inject the current one.
-    for (const oldId of ['dsh-restart-css', 'dsh-restart-css-v2']) {
-      document.getElementById(oldId)?.remove()
-    }
+    document.querySelectorAll('style[id^="dsh-restart-css"]').forEach((stale) => stale.remove())
     const style = document.createElement('style')
-    style.id = 'dsh-restart-css-v3'
+    style.id = 'dsh-restart-css-v4'
     style.textContent = [
       '.dsh-restart-trigger{background:transparent;color:var(--dsw-alias-label-secondary);transition:background-color 120ms ease,color 120ms ease,box-shadow 120ms ease}',
       '.dsh-restart-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
@@ -214,97 +276,88 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
 
   const triggerRef = useRef<HTMLButtonElement | null>(null)
 
-  useEffect(() => () => {
-    if (timer.current !== undefined) window.clearTimeout(timer.current)
-  }, [])
+  useEffect(() => () => clearTimer(), [clearTimer])
 
-  // Boot fallback: if the page reloaded while the service was restarting
-  // (sessionStorage marker set before the request), probe until the origin
-  // is back and surface a "service restarted" dialog.
+  // The one thing the runtime cannot do for us: swap in the restarted host's
+  // client bundles. The ConnectionController reconnects the transport but the
+  // page keeps executing the pre-restart JavaScript, so a scheduled restart
+  // reloads the page once — and only once — the connection has come back after
+  // a real outage (see restartReloadDecision).
   useEffect(() => {
-    let pending = false
-    try { pending = sessionStorage.getItem('dsh-restart-pending') === '1' } catch { /* ignore */ }
-    if (!pending) return
-    void (async () => {
-      await waitForReconnect(20000)
-      try { sessionStorage.removeItem('dsh-restart-pending') } catch { /* ignore */ }
-      setPhase({ kind: 'done' })
-      setOpen(true)
-      timer.current = window.setTimeout(() => {
-        setOpen(false)
-        setPhase({ kind: 'idle' })
-      }, 3500)
-    })()
-  }, [])
-
-  const close = useCallback(() => {
-    // A restart in flight must not be dismissible — closing the dialog would
-    // hide the progress and the success card that follows.
-    if (phase.kind === 'busy') return
+    const decision = restartReloadDecision(connectionState, {
+      scheduled: scheduledRef.current,
+      sawOutage: sawOutageRef.current,
+    })
+    sawOutageRef.current = decision.sawOutage
+    if (!decision.reload) return
+    scheduledRef.current = false
+    // Settle the UI first: if the reload is ever deferred or blocked, the
+    // trigger must not stay disabled with no way back.
     setOpen(false)
     setPhase({ kind: 'idle' })
+    window.location.reload()
+  }, [connectionState])
+
+  // Timeout fallback: if the service never comes back, stop claiming progress
+  // and point at the manual check instead of spinning forever. Depends on the
+  // phase alone so a re-render cannot restart the countdown.
+  useEffect(() => {
+    if (phase.kind !== 'pending') return undefined
+    const handle = window.setTimeout(() => {
+      scheduledRef.current = false
+      sawOutageRef.current = false
+      setPhase({ kind: 'failed', message: tRef.current('restart.timeout') })
+      setOpen(true)
+    }, PENDING_TIMEOUT_MS)
+    return () => window.clearTimeout(handle)
   }, [phase.kind])
 
-  // Debounce double-confirms: a second run() would hit already-scheduled and
-  // flip the phase to done prematurely.
-  const busyRef = useRef(false)
+  const close = useCallback(() => {
+    // Dismissible even while a restart is in flight: the reload is driven by
+    // refs, not by this dialog, so hiding the card never cancels the restart.
+    // The pending phase itself is kept, so the trigger stays busy and the
+    // timeout above still runs.
+    clearTimer()
+    setOpen(false)
+    setPhase((current) => (current.kind === 'pending' ? current : { kind: 'idle' }))
+  }, [clearTimer])
 
   const run = useCallback(async () => {
     if (busyRef.current) return
     busyRef.current = true
-    setPhase({ kind: 'busy' })
-    setBusyAt(Date.now())
+    clearTimer()
+    setPhase({ kind: 'pending' })
     const result: RestartApiResult = await requestRestart('webui-button')
-    if (result.status === 'already-scheduled') {
-      busyRef.current = false
-      setPhase({ kind: 'done' })
-      // already in flight — tie into the reconnect probe anyway
-    } else if (result.status === 'scheduled') {
-      // Remember the restart across a possible page reload so the boot path
-      // can show a "service restarted" toast even if the UI tree reloads.
-      try { sessionStorage.setItem('dsh-restart-pending', '1') } catch { /* ignore */ }
-      // The service will go down shortly; the connection client reconnects on
-      // its own. Show a brief "triggered", then flip to "reconnected" once we
-      // can reach the origin again — waitForRestart makes the probe resolve
-      // only after a real down-then-up cycle, not against the pre-restart
-      // process still being alive during the scheduling delay.
-      const reconnected = await waitForReconnect(20000, true)
-      // Main flow completed — clear the reload fallback marker so a later page
-      // load does not re-show a stale card.
-      try { sessionStorage.removeItem('dsh-restart-pending') } catch { /* ignore */ }
-      if (reconnected) {
-        setPhase({ kind: 'done' })
-        // Force a full page reload: auto-reconnect alone keeps running the old
-        // pre-restart JS bundle, which is why fixes only appear after manual F5.
-        window.setTimeout(() => window.location.reload(), 800)
-      } else {
-        setPhase({ kind: 'failed', message: t('restart.failedHint') })
-      }
-    } else if (result.status === 'forbidden') {
-      busyRef.current = false
+    if (result.status === 'scheduled' || result.status === 'already-scheduled' || result.status === 'unreachable') {
+      // The host owns the countdown from here (an unreachable request means it
+      // may already have gone down mid-flight). Arm the reload and let the
+      // runtime's connection indicator narrate the outage. Arming is safe even
+      // if no restart actually happened: the reload needs an observed outage
+      // first, and a healthy service never produces one.
+      scheduledRef.current = true
+      return
+    }
+    busyRef.current = false
+    if (result.status === 'forbidden') {
       setPhase({ kind: 'denied' })
     } else if (result.status === 'suppressed') {
-      busyRef.current = false
       setPhase({ kind: 'failed', message: t('restart.suppressed') })
     } else if (result.status === 'unsupported') {
-      busyRef.current = false
       setPhase({ kind: 'failed', message: t('restart.unsupported') })
     } else {
-      busyRef.current = false
       setPhase({ kind: 'failed', message: result.message })
     }
-    // Auto-dismiss the result dialog after a beat (long enough to read the
-    // success card).
+    // Auto-dismiss a terminal result after a beat (long enough to read it).
     timer.current = window.setTimeout(() => {
       setOpen(false)
       setPhase({ kind: 'idle' })
-    }, 5000)
-  }, [t])
+    }, RESULT_DISMISS_MS)
+  }, [clearTimer, t])
 
   const confirm = useCallback(() => {
-    // Keep the dialog open: busy → reconnected → done must stay visible
-    // (previously setOpen(false) hid every later phase, so the user saw
-    // nothing after confirming).
+    // Keep the dialog open: pending must stay visible until the reload or the
+    // timeout replaces it (previously setOpen(false) hid every later phase, so
+    // the user saw nothing after confirming).
     void run()
   }, [run])
 
@@ -335,6 +388,7 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   }, [])
 
   const label = t('restart.label')
+  const pending = phase.kind === 'pending'
 
   const trigger = (
     <button
@@ -343,18 +397,15 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       className="dsh-restart-trigger"
       style={wide ? triggerStyle : triggerRailStyle}
       aria-label={label}
-      aria-busy={phase.kind === 'busy' || undefined}
-      disabled={phase.kind === 'busy'}
-      title={phase.kind === 'busy' ? t('restart.busy') : label}
+      aria-busy={pending || undefined}
+      disabled={pending}
+      title={pending ? t('restart.pendingShort') : label}
       onClick={() => {
-        // Custom styled confirm. The forced full-page reload after restart
-        // ensures the new client bundle is loaded, so this dialog should no
-        // longer suffer the stale-JS/portal problems seen before.
         setPhase({ kind: 'confirming' })
         setOpen(true)
       }}
     >
-      {phase.kind === 'busy' ? <SpinnerGlyph size={wide ? 16 : 18} /> : <RestartGlyph size={wide ? 16 : 18} />}
+      {pending ? <SpinnerGlyph size={wide ? 16 : 18} /> : <RestartGlyph size={wide ? 16 : 18} />}
     </button>
   )
 
@@ -372,26 +423,12 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
             </div>
           </>
         )}
-        {phase.kind === 'busy' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {phase.kind === 'pending' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }} role="status">
             <SpinnerGlyph size={18} />
             <div>
-              <p style={titleStyle}>{t('restart.busy')}</p>
-              {busyAt > 0 && Date.now() - busyAt > 15000 && (
-                <p style={hintStyle}>{t('restart.busySlow')}</p>
-              )}
-              {busyAt > 0 && Date.now() - busyAt > 5000 && Date.now() - busyAt <= 15000 && (
-                <p style={hintStyle}>{t('restart.busyWait')}</p>
-              )}
-            </div>
-          </div>
-        )}
-        {phase.kind === 'done' && (
-          <div style={successCardStyle} role="status">
-            <CheckGlyph size={18} />
-            <div>
-              <p style={successTitleStyle}>{t('restart.done')}</p>
-              <p style={successSubStyle}>DeepSeek Harness</p>
+              <p style={titleStyle}>{t('restart.pending')}</p>
+              <p style={hintStyle}>{t('restart.pendingHint')}</p>
             </div>
           </div>
         )}

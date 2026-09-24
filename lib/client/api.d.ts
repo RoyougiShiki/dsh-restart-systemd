@@ -2,6 +2,13 @@
  * Browser-side wire helper for the /api/restart-dsh surface. Plain same-origin
  * fetch with a JSON body (like remote-web-ui's pair-api / the connection
  * client). Returns classified outcomes so the button can render state.
+ *
+ * There is deliberately NO reconnect probe here: the client runtime's own
+ * ConnectionController already owns the connect/retry loop (exponential
+ * backoff, base 500ms → cap 10s) and publishes its lifecycle on
+ * `ctx.connection.state`, which the official ConnectionIndicator renders in
+ * the sidebar footer. This module only asks the host to restart and reports
+ * what the host answered.
  * @module dsh-restart-systemd/client/api
  */
 export type RestartApiResult = {
@@ -15,6 +22,10 @@ export type RestartApiResult = {
     status: 'forbidden';
 } | {
     status: 'unsupported';
+}
+/** The request never completed — the service may already be going down. */
+ | {
+    status: 'unreachable';
 } | {
     status: 'error';
     message: string;
@@ -25,13 +36,4 @@ export type RestartApiResult = {
  * @returns the classified outcome.
  */
 export declare function requestRestart(reason?: string): Promise<RestartApiResult>;
-/**
- * Poll until the WebUI is reachable again after a restart (the connection
- * client reconnects on its own; this is a best-effort probe for the button's
- * "reconnected" copy). Resolves true when a fetch to the same origin succeeds
- * within the timeout.
- * @param timeoutMs - how long to keep probing.
- * @returns true when the origin became reachable.
- */
-export declare function waitForReconnect(timeoutMs?: number, waitForRestart?: boolean): Promise<boolean>;
 //# sourceMappingURL=api.d.ts.map
