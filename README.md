@@ -59,7 +59,7 @@ src/
 3. host 把**当前 running** 的 agent id 快照到 `$DSH_HOME/dsh-restart-resume.json`，写 flag `$DSH_HOME/dsh-restart.flag`，随即回 **202 `{scheduled:true, delayMs:3000}`**。
 4. 3s 后 host 用**白名单 argv**（无 shell 拼串）spawn `systemctl --user restart dsh-web`。服务重启；浏览器靠 ConnectionController 指数退避（500ms→10s）**自动重连，无需手动刷新**，核心指示器同步显示断线与恢复。
 5. 页面观察到断线→恢复后自动 `location.reload()` 一次（换掉重启前的前端 bundle）；45s 内始终未恢复则弹超时提示并指向 `systemctl --user status dsh-web`。
-6. 重启后插件消费（删除）flag token，装上 `agent/created` 监听，读 resume 列表——对每个**最后 turn 被中断**（存在未闭合 `turn/start`，或最近的 `turn/end.reason.kind === 'interrupted'`）的会话，`agent.followup("Continue.")` 自动续接；idle/正常结束的会话绝不打扰。
+6. 重启后插件先消费（删除）flag token，再装上 `agent/created` 监听、读取并立即消费 resume 列表——对每个**最后 turn 被中断**（存在未闭合 `turn/start`，或最近的 `turn/end.reason.kind === 'interrupted'`）的会话，`agent.followup("Continue.")` 自动续接；idle/正常结束的会话绝不打扰。**续接没有截止时间**：会话什么时候被重新打开就什么时候续接（浏览器自动重连通常是秒级，用户稍后回来也可以）。
 
 ### 平台三态
 
@@ -130,10 +130,16 @@ v0.2 起 devDependencies 对齐 **DSH 0.1.7-rc.1**（v0.1 编译于 0.1.0-rc.6�
 ## 验证
 
 ```bash
-npm test          # = build + verify-client(41 项) + verify-host(17 项)
-npm run test:client
-npm run test:host
+npm test            # = build + 下面四套（共 87 项）
+npm run test:client # 41 项：客户端 bundle 接线 / 刷新状态机 / 渲染与文案
+npm run test:host   # 25 项：续接判定全分支 / arm 端到端 / 无截止时间 / inject 声明
+npm run test:wiring # 11 项：真 cordis 下的服务拓扑与 inject 解析
+npm run test:cycle  # 10 项：整个宿主链路（写快照 → boot 消费 → 续接）
 ```
+
+后两套用**真 cordis 加载真插件**，并把 `subprocess.spawn` 打桩——因此**不需要重启服务**就能验证宿主半边，物理上也不可能触发重启。`test:cycle` 尤其关键：它按真实拓扑（`agents` 由**兄弟**插件提供）跑完整循环——重启写快照 → 下一个进程 boot 消费 flag/resume → `arm()` 装监听 → `agent/created` 触发 → 只有「最后 turn 被中断」的会话收到 `Continue.`。
+
+> **对照实验**：把同一套 `test:cycle` 跑在修复前的构建上，快照是 `sessionIds: []`（自动续接永远不可能触发）；跑在修复后是 `["session-interrupted","session-clean"]`。测试对 bug 敏感，不是空测试。
 
 `scripts/verify-client.mjs` 在没有浏览器、也不重启线上服务的前提下验三件事：
 1. **loader 接线**：按 DSH 加载器的方式 boot `lib/client/index.js`，断言注册的 slot / locale / `hooks.connectionState`，以及运行时 require 只有 `react`、`react-dom`、`react/jsx-runtime` 三个 seed word；
@@ -142,9 +148,14 @@ npm run test:host
 
 `scripts/verify-host.mjs` 盯住续接判定这条最危险的逻辑（两个方向都会坏：太激进 = 给正常结束的会话发多余 turn；太保守 = 中断的 turn 永远不续接）：
 1. **`lastTurnInterrupted` 全分支**：未闭合 turn / `interrupted` / `completed` / `aborted` / `blocked` / `error` / `max-tokens` / 空日志 / 日志不可读（兜底为续接）；
-2. **`arm()` 端到端**：只有「在快照里 **且** 最后 turn 确实被中断」的会话才会收到一条 `Continue.`，且该消息带本插件自有 source kind；正常结束或不在快照里的会话一条都不发。
+2. **`arm()` 端到端**：只有「在快照里 **且** 最后 turn 确实被中断」的会话才会收到一条 `Continue.`，且该消息带本插件自有 source kind；正常结束或不在快照里的会话一条都不发；
+3. **续接没有 boot 相对截止时间**：晚到的会话恢复仍会被续接；标记文件读取即消费（第二次 boot 无法据其重新武装）；同一个 id 最多只续接一次；
+4. **`inject` 必须声明 `agents`**：这是让快照不为空的前提（见下）。
 
-> 这套用例是有来历的：升级到 0.1.7-rc.1 后 `agent.session.events` 被 `snapshotEvents()` 取代，旧代码抛出的 TypeError 被 `try/catch` 吞掉，于是 `lastTurnInterrupted()` **对任何会话都返回 true**。实测把旧实现对着新 Session 形状跑，4/4 个「干净结束」用例全判成需要续接——即会给快照里每个会话都灌一条 `Continue.`。现在这条回归被上面的用例钉死。
+> 这套用例是有来历的，三条都是实测事故：
+> 1. 升级到 0.1.7-rc.1 后 `agent.session.events` 被 `snapshotEvents()` 取代，旧代码抛出的 TypeError 被 `try/catch` 吞掉，于是 `lastTurnInterrupted()` **对任何会话都返回 true**。实测把旧实现对着新 Session 形状跑，4/4 个「干净结束」用例全判成需要续接——即会给快照里每个会话都灌一条 `Continue.`。
+> 2. 早先的实现以 boot 为基准给 60s 截止时间。实测本机一次重启：会话 18:40:58 被打断，直到 21:06 才被恢复，那时 `pending` 已清空，**续接完全没发生**。现在改为「等会话被打开，没有截止时间」。
+> 3. **最隐蔽的一条**：`inject` 漏了 `agents`。cordis 只给已声明依赖解析服务，而提供方（dsh-base 的 `agent` 行）与插件是**根级兄弟**、不是祖先，于是读 `ctx.agents` 抛 `cannot get property "agents" without inject`，又被 `catch { return [] }` 吞成空数组——**每次重启快照都是 `[]`，自动续接从头到尾就没工作过**，日志里只留一句 `recorded 0 running agent(s)`，看着像"当时没任务在跑"。现在改为失败时 `logger.warn` 明说"本次不会续接任何会话"，并打出 `live=N (id:status, …)` 让空快照一眼可辨。
 
 线上手工验收：
 
@@ -184,7 +195,7 @@ rm -f ~/.dsh/dsh-restart.flag ~/.dsh/dsh-restart-resume.json
 
 - **单一服务单元**：systemctl 命令固定 `dsh-web`（`SYSTEMD_UNIT`）。
 - **非 systemctl 启动则不生效**：若以 `node …` 手跑，spawn systemctl 会失败并记日志，不产生重启。
-- **恢复为尽力而为**：60s `RECOVERY_TIMEOUT_MS` 窗口内未重建的 agent 会被丢弃；无法判定“最后 turn 被中断”的会话会被跳过（clean 会话永不被主动续接）。
+- **续接等待会话被恢复，没有截止时间**：重启前记录的会话一旦被重新打开（浏览器自动重连、或用户稍后回到该对话）就会续接，无论隔了多久。判定门槛是「最后 turn 确实被中断」——用户若已手动恢复过，那个 turn 会以 `completed`/`aborted` 收尾，从而被跳过，所以不会打扰。仍在快照里但始终没被打开的会话（例如无头运行）只是留在内存里，不再写回磁盘：`dsh-restart-resume.json` 在读取时即被消费（删除），与 flag 同为一次性令牌。
 - **Windows helper 为占位**：仅提供 spawn 目标，helper 本体机器相关，超出 WSL 主目标范围。
 - 路由避开 `/plugins`（官方 client-modules 拥有该前缀），仅注册 `/api/restart-dsh`，无 bundle 供数冲突。
 - **折叠（rail）侧边栏下核心不渲染连接指示器**：`ConnectionIndicator` 仅在 `wide` 时挂载（`sidebar.toggle.badge` 也会在断线时隐藏）。此时用户只能看到重启按钮自身的 spinner/禁用态；展开侧边栏即可看到核心的断线/重连提示。

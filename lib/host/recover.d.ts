@@ -32,18 +32,34 @@ declare module '@deepseek-ai/dsh-llm' {
 }
 /** The text of the auto-continue followup pushed to a resumed agent. */
 export declare const CONTINUE_TEXT = "Continue.";
-/** How long to keep listening after boot for matching agents before giving up. */
-export declare const RECOVERY_TIMEOUT_MS = 60000;
 /** Payload of the resume snapshot file. */
 export interface ResumeState {
     ts: number;
     reason?: string;
     sessionIds: SessionId[];
 }
-/** Ids that still need a matching agent; drains as agents are continued. */
+/**
+ * Ids that still need a matching agent; drains as agents are continued.
+ *
+ * ## Why there is no recovery deadline
+ *
+ * A session is only restored when something opens it — the browser reconnecting
+ * on its own, or the user coming back to that conversation later. An earlier
+ * version gave up 60s after boot, which quietly made late restores
+ * unrecoverable: the marker had already been cleared by the time
+ * `agent/created` finally fired. (Observed on this machine: the session was
+ * restored 2h25m after the restart and received no continuation.)
+ *
+ * The pending set therefore lives for the whole process, and the gate that
+ * actually protects against poking the wrong session is
+ * {@link Recovery.lastTurnInterrupted}: a session the user has since resumed
+ * by hand ends its turn as `completed`/`aborted`/… and is skipped, so only a
+ * turn still sitting interrupted gets continued. The marker file itself is
+ * consumed (deleted) the moment it is read, exactly like the restart flag, so
+ * it can never arm a later boot.
+ */
 export declare class Recovery {
     private readonly pending;
-    private timer;
     private readonly resumePath;
     private readonly ctx;
     private armed;
@@ -55,9 +71,9 @@ export declare class Recovery {
      * is installed before the service starts restoring sessions.
      */
     arm(): () => void;
-    /** Load the resume file into `pending`, then arm the timeout to clear it. */
+    /** Load the resume file into `pending`; the marker is consumed as it is read. */
     private loadAndListen;
-    /** Handle a fresh agent/created event during the recovery window. */
+    /** Handle an `agent/created` event; only listed sessions are considered. */
     private onAgent;
     /**
      * Whether the agent's most recent turn was cut short: a `turn/end` whose
@@ -67,7 +83,6 @@ export declare class Recovery {
      * `Session.snapshotEvents()` reader (the log itself is private).
      */
     private lastTurnInterrupted;
-    private finish;
     private safeUnlink;
 }
 //# sourceMappingURL=recover.d.ts.map

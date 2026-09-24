@@ -14,12 +14,18 @@
  * returned `true` unconditionally. These cases pin the real per-reason behaviour
  * so that regression cannot come back unnoticed.
  *
+ * The second half covers WHEN recovery may fire. An earlier version gave up 60s
+ * after boot, which silently made a late session restore unrecoverable; these
+ * cases assert that a restore arriving long after boot is still continued, that
+ * the marker is one-shot, and that an id is never continued twice.
+ *
  * Run with `npm test` (which builds first).
  */
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { Recovery, CONTINUE_TEXT, RECOVERY_TIMEOUT_MS } from '../lib/host/recover.js'
+import { Recovery, CONTINUE_TEXT } from '../lib/host/recover.js'
+import { inject } from '../lib/index.js'
 
 let failed = 0
 let checks = 0
@@ -97,7 +103,7 @@ const start = (turn) => ({ type: 'turn/start', seq: turn * 2, time: 0, data: { t
 const end = (turn, kind) => ({ type: 'turn/end', seq: turn * 2 + 1, time: 0, data: { turn, reason: { kind } } })
 
 // ---------------------------------------------------------------------------
-console.log('\n[1/2] lastTurnInterrupted reads the restored log correctly')
+console.log('\n[1/4] lastTurnInterrupted reads the restored log correctly')
 
 const cases = [
   ['open turn (crash mid-flight)', [start(1), end(1, 'completed'), start(2)], true],
@@ -118,7 +124,7 @@ for (const [label, events, expected] of cases) {
 }
 
 // ---------------------------------------------------------------------------
-console.log('\n[2/2] end-to-end arm(): only interrupted sessions get a followup')
+console.log('\n[2/4] end-to-end arm(): only interrupted sessions get a followup')
 
 const interruptLog = [start(1), end(1, 'completed'), start(2)]
 const cleanLog = [start(1), end(1, 'completed')]
@@ -162,9 +168,54 @@ await settle()
 unlisted.listener({ agent: unlisted.agent })
 check(unlisted.followed.length === 0, 'session absent from the snapshot is never auto-continued')
 
-check(RECOVERY_TIMEOUT_MS > 0, `recovery window is a positive duration (${RECOVERY_TIMEOUT_MS}ms)`)
+// ---------------------------------------------------------------------------
+console.log('\n[3/4] recovery has no boot-relative deadline')
+
+// The regression this pins: a session restored long after boot must still be
+// continued. The old 60s window cleared `pending` before `agent/created` fired,
+// so the user's interrupted work was never resumed.
+const latePath = join(dir, 'late.json')
+writeFileSync(latePath, JSON.stringify({ ts: Date.now(), sessionIds: ['session-under-test'] }), 'utf8')
+const late = makeRecovery(interruptLog, latePath)
+late.recovery.arm()
+await settle()
+// Stand in for "the user came back much later": well past the old 60s deadline.
+await new Promise((resolve) => setTimeout(resolve, 250))
+late.listener({ agent: late.agent })
+check(late.followed.length === 1, 'a late restore is still continued (no boot-relative deadline)')
+
+// The marker is a one-shot token: reading it removes it, so a later boot cannot
+// re-arm recovery from the same file.
+check(!existsSync(latePath), 'the resume marker is consumed (deleted) as it is read')
+const secondBoot = makeRecovery(interruptLog, latePath)
+secondBoot.recovery.arm()
+await settle()
+secondBoot.listener({ agent: secondBoot.agent })
+check(secondBoot.followed.length === 0, 'a second boot cannot re-arm from a consumed marker')
+
+// An id drains once handled, so repeated agent creation cannot double-continue.
+const drainPath = join(dir, 'drain.json')
+writeFileSync(drainPath, JSON.stringify({ ts: Date.now(), sessionIds: ['session-under-test'] }), 'utf8')
+const drain = makeRecovery(interruptLog, drainPath)
+drain.recovery.arm()
+await settle()
+drain.listener({ agent: drain.agent })
+drain.listener({ agent: drain.agent })
+drain.listener({ agent: drain.agent })
+check(drain.followed.length === 1, `an id is continued at most once (got ${drain.followed.length})`)
 
 rmSync(dir, { recursive: true, force: true })
+
+// ---------------------------------------------------------------------------
+console.log('\n[4/4] the agent registry is a declared dependency')
+
+// The bug this pins: `ctx.agents` was read without declaring it, so cordis
+// refused the lookup, the snapshot helper swallowed the throw, and EVERY
+// restart recorded zero sessions — auto-resume had silently never worked.
+check(inject.includes('agents'), `inject declares the agents service (got ${JSON.stringify([...inject])})`)
+for (const seam of ['webServer', 'subprocess', 'systemPrompt', 'commands']) {
+  check(inject.includes(seam), `inject still declares ${seam}`)
+}
 
 // ---------------------------------------------------------------------------
 console.log(`\n${checks - failed}/${checks} checks passed`)

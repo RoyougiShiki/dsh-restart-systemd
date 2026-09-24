@@ -31,8 +31,17 @@ import { Recovery } from './host/recover.ts'
 /** Home that this plugin writes its state under. */
 const HOME = resolveDshHome(undefined, process.env)
 
-/** Required service seams from the root: webserver routes, subprocess spawn, prompt band, commands. */
-export const inject = ['webServer', 'subprocess', 'systemPrompt', 'commands'] as const
+/**
+ * Required service seams from the root: webserver routes, subprocess spawn,
+ * prompt band, commands, and the live agent registry.
+ *
+ * `agents` is NOT optional. Cordis resolves services only for declared
+ * dependencies, so reading `ctx.agents` without it throws — and because the
+ * snapshot helper caught that throw, every restart recorded ZERO sessions and
+ * auto-resume silently never ran. Declaring it is what makes the registry
+ * reachable.
+ */
+export const inject = ['webServer', 'subprocess', 'systemPrompt', 'commands', 'agents'] as const
 
 /** Model-facing announcement of the restart surface (audit / self-help copy). */
 export const RESTART_GUIDANCE =
@@ -49,22 +58,35 @@ export function apply(ctx: Context): void {
 
   ctx.effect(() => () => scheduler.dispose(), 'dsh-restart-systemd: scheduler cleanup')
 
-  // Boot-time one-shot: consume (delete) a leftover flag token from a previous
-  // plugin-driven restart and arm recovery for listed agents. Runs before any
-  // session is restored, so the `agent/created` listener is already installed.
+  // Boot-time one-shot: consume a leftover flag token from a previous
+  // plugin-driven restart, then arm recovery for the sessions it recorded. The
+  // consume MUST settle before arming: with no flag present it drops a stale
+  // resume marker, and the two async file reads would otherwise race — a marker
+  // left by a crashed run could arm recovery for a boot this plugin did not
+  // cause. Arming still lands before any session is restored, so the
+  // `agent/created` listener is installed in time.
   ctx.effect(() => {
-    void scheduler.consumeStaleState()
-    return recovery.arm()
+    let detach: (() => void) | undefined
+    let cancelled = false
+    void (async () => {
+      await scheduler.consumeStaleState()
+      if (cancelled) return
+      detach = recovery.arm()
+    })()
+    return () => {
+      cancelled = true
+      detach?.()
+    }
   }, 'dsh-restart-systemd: boot consume + recovery arm')
 
   const agentRunner = (): readonly Agent[] => {
-    // Enumerate live agents from the root registry. The agent service is a
-    // root service (not injection-declared), so reach it through ctx.agents.
+    // Enumerate live agents from the registry declared in `inject`. A failure
+    // here means the snapshot would be silently empty (and auto-resume would
+    // never fire), so it is reported loudly rather than swallowed.
     try {
-      const agents = (ctx as unknown as { agents?: { list: () => Agent[] } }).agents
-      return agents?.list?.() ?? []
-    } catch {
-      // ignore — best effort snapshot
+      return ctx.agents.list()
+    } catch (error) {
+      ctx.logger.warn(`dsh-restart-systemd: could not enumerate live agents, no session will be resumed: ${String(error)}`)
       return []
     }
   }
