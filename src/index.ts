@@ -21,7 +21,6 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-host-webserver'
 import type {} from '@deepseek-ai/dsh-subprocess'
-import type {} from '@deepseek-ai/dsh-system-prompt'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-commands'
 import { isLoopbackRequest, forbidden } from './host/gate.ts'
@@ -41,16 +40,16 @@ const HOME = resolveDshHome(undefined, process.env)
  * auto-resume silently never ran. Declaring it is what makes the registry
  * reachable.
  */
-export const inject = ['webServer', 'subprocess', 'systemPrompt', 'commands', 'agents'] as const
-
-/** Model-facing announcement of the restart surface (audit / self-help copy). */
-export const RESTART_GUIDANCE =
-  '本插件（dsh-restart-systemd）在 WebUI 左侧侧边栏底部“设置”按钮旁提供一个重启按钮，并注册 `/restart` 命令：点击/输入后二次确认，服务端返回 202 并延迟约 3s 执行 `systemctl --user restart dsh-web`（WSL/Linux；Windows 走 detached helper）。重启前会记录 running agent 的会话，重启后自动续接被中断的 turn。重复触发返回 409，非 loopback 来源返回 403。手动排障：journalctl --user -u dsh-web。'
+export const inject = ['webServer', 'subprocess', 'commands', 'agents'] as const
 
 /**
  * Mount the restart route, the /restart command, and the boot-time
  * consume/recover listeners.
- * @param ctx - context carrying webServer, subprocess, systemPrompt.
+ *
+ * Contributes nothing to the model's prompt: the restart surface is a human
+ * affordance (a sidebar button plus a slash command), and the slash-command
+ * registry is contractually outside model requests. See README "不写入系统提示词".
+ * @param ctx - context carrying webServer, subprocess, commands, agents.
  */
 export function apply(ctx: Context): void {
   const scheduler = new RestartScheduler(ctx, HOME)
@@ -163,13 +162,6 @@ export function apply(ctx: Context): void {
       return { kind: 'error' as const, text: `Restart is not supported on this platform (${process.platform}); run: systemctl --user restart dsh-web` }
     },
   }), 'dsh-restart-systemd: /restart command')
-
-  // --- announcement to agents (system-prompt section) ---
-  ctx.effect(() => ctx.systemPrompt.section({
-    name: 'plugin:dsh-restart-systemd',
-    order: 215,
-    text: RESTART_GUIDANCE,
-  }), 'dsh-restart-systemd: prompt section')
 }
 
 /** Join one filename onto the resolved DSH home. */

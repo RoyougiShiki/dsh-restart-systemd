@@ -57,7 +57,6 @@ function makeServices() {
         return { done: Promise.resolve({ exitCode: 0, signal: null }) }
       },
     },
-    systemPrompt: { section: () => () => undefined },
     commands: { register: (spec) => { captured.commands.push(spec); return () => undefined } },
     agents: { list: () => RUNNING },
   }
@@ -77,7 +76,7 @@ console.log('\n[1/3] the restart writes the snapshot (real plugin, stubbed spawn
   const ctx = new Context()
   // Production topology: the registry is provided by a SIBLING plugin.
   await ctx.plugin({ inject: [], apply(scope) { scope.provide('agents', { list: () => RUNNING }) } })
-  for (const name of ['webServer', 'subprocess', 'systemPrompt', 'commands']) ctx.provide(name, svc[name])
+  for (const name of ['webServer', 'subprocess', 'commands']) ctx.provide(name, svc[name])
 
   const plugin = await loadPlugin()
   await ctx.plugin(plugin)
@@ -104,7 +103,7 @@ console.log('\n[2/3] the next boot consumes the flag and arms recovery')
   const svc = makeServices()
   const ctx = new Context()
   await ctx.plugin({ inject: [], apply(scope) { scope.provide('agents', { list: () => RUNNING }) } })
-  for (const name of ['webServer', 'subprocess', 'systemPrompt', 'commands']) ctx.provide(name, svc[name])
+  for (const name of ['webServer', 'subprocess', 'commands']) ctx.provide(name, svc[name])
 
   const plugin = await loadPlugin()
   await ctx.plugin(plugin)

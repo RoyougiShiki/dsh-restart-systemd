@@ -213,9 +213,16 @@ console.log('\n[4/4] the agent registry is a declared dependency')
 // refused the lookup, the snapshot helper swallowed the throw, and EVERY
 // restart recorded zero sessions — auto-resume had silently never worked.
 check(inject.includes('agents'), `inject declares the agents service (got ${JSON.stringify([...inject])})`)
-for (const seam of ['webServer', 'subprocess', 'systemPrompt', 'commands']) {
+for (const seam of ['webServer', 'subprocess', 'commands']) {
   check(inject.includes(seam), `inject still declares ${seam}`)
 }
+
+// ...and it must stay OUT of the model's prompt. The restart surface is a human
+// affordance — a sidebar button plus a slash command — and `dsh-commands`
+// promises the registry never enters a model request, so announcing it through a
+// system-prompt section bought nothing and paid for it in every request of every
+// session and every subagent. Pinned after v0.1 shipped exactly that section.
+check(!inject.includes('systemPrompt'), `inject does not claim the systemPrompt band (got ${JSON.stringify([...inject])})`)
 
 // ---------------------------------------------------------------------------
 console.log(`\n${checks - failed}/${checks} checks passed`)

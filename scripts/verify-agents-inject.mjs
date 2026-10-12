@@ -93,7 +93,6 @@ ctx.provide('subprocess', {
     return { done: Promise.resolve({ exitCode: 0, signal: null }) }
   },
 })
-ctx.provide('systemPrompt', { section: () => () => undefined })
 ctx.provide('commands', { register: (spec) => { captured.commands.push(spec); return () => undefined } })
 
 const plugin = await import(pathToFileURL(join(process.cwd(), 'lib/index.js')).href)

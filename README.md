@@ -200,6 +200,7 @@ rm -f ~/.dsh/dsh-restart.flag ~/.dsh/dsh-restart-resume.json
 - 路由避开 `/plugins`（官方 client-modules 拥有该前缀），仅注册 `/api/restart-dsh`，无 bundle 供数冲突。
 - **折叠（rail）侧边栏下核心不渲染连接指示器**：`ConnectionIndicator` 仅在 `wide` 时挂载（`sidebar.toggle.badge` 也会在断线时隐藏）。此时用户只能看到重启按钮自身的 spinner/禁用态；展开侧边栏即可看到核心的断线/重连提示。
 - **续接消息的 source.kind 变了**：v0.1 用的是已废弃的共享 `kind: 'plugin'`，v0.2 按 harness 设计改为本插件自有的 `kind: 'dsh-restart-systemd'`（`MessageSourceMap` 合并扩展）。任何按 `source.kind === 'plugin'` 过滤注入消息的插件（如 `dsh-handoff-wall` 的取材过滤）需同步加上这个新 kind，否则 `Continue.` 会被当作真实对话取走。
+- **不写入系统提示词**（v0.1 的注入已删除）：v0.1 用过 `ctx.systemPrompt.section({ name: 'plugin:dsh-restart-systemd', order: 215 })`，把一段运维说明广播给**每个会话、每一轮、以及每个子代理**。删除理由有三：重启面是**人**的能力（侧边栏按钮 + `/restart`），而 `dsh-commands` 的契约是命令注册表**不进任何模型请求**（"Command discovery, execution, and UI output add no model tokens"），所以那段文字买不到任何模型行为改变；它的体裁是 README（HTTP 202/409/403、3s 延迟、`journalctl` 排障），不是祈使句形式的行为指令，官方 prompt 段落（`dsh-tool-jobs`、`dsh-tool-fs` 等）全是后者；而且它的断言在 v0.2 修好之前一直是假的——它声称「重启前记录会话、重启后自动续接」，而 `1e4206d` 之前 `inject` 漏了 `agents`，快照恒为空、自动续接从未生效。能力发现走命令/工具描述，人类说明留在本 README。`scripts/verify-host.mjs` 用 `!inject.includes('systemPrompt')` 钉住这条。
 
 ## License
 
