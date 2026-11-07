@@ -6,3 +6,9 @@ node_modules/
 # logs / editor
 *.log
 .DS_Store
+
+# local verification evidence (screenshots, ego scripts, release tarballs)
+.scratch/*
+!.scratch/minimal-systemd-restart/
+.scratch/minimal-systemd-restart/*
+!.scratch/minimal-systemd-restart/plan.md
