@@ -154,6 +154,6 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 
 **安装命令已在 profile 的隔离副本上验证（未触碰当前 profile）**：复制 profile 的 `package.json` + `pnpm-lock.yaml` 后，`pnpm add link:<仓库>` 与 `pnpm add github:RoyougiShiki/dsh-restart-systemd` 只有加 `--config.auto-install-peers=false` 才 exit 0；不加则 `ERR_PNPM_NO_MATCHING_VERSION @deepseek-ai/dsh-session@>=0.2.2 <0.3.0-0`（`@michengai/dsh-archive-manager` 的 peer 范围 × `~/.npmrc` 的 npmmirror 源，该区间在 registry 上不存在）。装上后 `lib/index.js` `8c3ed25b…`、`lib/host/restart.js` `efafdfc4…`、`lib/host/gate.js` `29bb94ad…` 与仓库 HEAD 完全一致，`lib/host/` 内无 `recover.*`。
 
-Qcw
+对照实验确认这不是本插件引入的：在同一次复制里 `pnpm add link:../dsh-decision-continuity`（与该 peer 无关的包）不加 flag 同样 exit 1、加 flag exit 0。也就是说**当前 profile 上任何 `pnpm add` 都会撞到同一个解析失败**，与本迭代无关；README 的安装命令因此一律带该 flag，不能把它当成插件侧的偶发环境问题。
 
 同类验证：`pnpm remove dsh-restart-systemd` 不加 flag 同样 exit 1（这次撞的是 `@deepseek-ai/dsh-llm`），加 flag exit 0 并从 lock 里摘干净（`grep -c` 6→0）；README 的回滚命令也补了该 flag。该 flag 只关「pnpm 替 peer 自动补装」，profile 里插件声明的真实依赖不受影响。
