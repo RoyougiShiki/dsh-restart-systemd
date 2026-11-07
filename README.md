@@ -10,7 +10,7 @@
 > tries to reconnect, resume interrupted turns, or reload the page: after **202**, the
 > normal DSH connection state is the source of truth. Platform: **Linux / WSL only**.
 
-**GitHub topics** (when the main agent creates the repository): `dsh` · `dsh-plugin` · `restart` · `systemd` · `wsl`
+**GitHub topics**: `dsh` · `dsh-plugin` · `restart` · `systemd` · `wsl`
 
 ---
 

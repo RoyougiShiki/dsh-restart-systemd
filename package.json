@@ -27,9 +27,9 @@
     "type": "git",
     "url": "https://github.com/RoyougiShiki/dsh-restart-systemd.git"
   },
-  "homepage": "https://github.com/<your-org>/dsh-restart-systemd",
+  "homepage": "https://github.com/RoyougiShiki/dsh-restart-systemd",
   "bugs": {
-    "url": "https://github.com/<your-org>/dsh-restart-systemd/issues"
+    "url": "https://github.com/RoyougiShiki/dsh-restart-systemd/issues"
   },
   "author": "dsh-restart-systemd contributors",
   "keywords": [
