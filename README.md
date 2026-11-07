@@ -128,7 +128,7 @@ node scripts/verify-ui-browser.mjs --url <FIXTURE_URL> --task-space <隔离任�
 ## 回滚
 
 ```bash
-dsh plugin --profile web remove dsh-restart-systemd
+dsh plugin --profile web remove dsh-restart-systemd --config.auto-install-peers=false
 systemctl --user restart dsh-web
 # 可选：清理残留状态
 rm -f ~/.dsh/dsh-restart.flag ~/.dsh/dsh-restart-resume.json
