@@ -156,6 +156,6 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 
 对照实验确认这不是本插件引入的：在同一次复制里 `pnpm add link:../dsh-decision-continuity`（与该 peer 无关的包）不加 flag 同样 exit 1、加 flag exit 0。也就是说**当前 profile 上任何 `pnpm add` 都会撞到同一个解析失败**，与本迭代无关；README 的安装命令因此一律带该 flag，不能把它当成插件侧的偶发环境问题。
 
-FOa
+同类验证：`pnpm remove dsh-restart-systemd` 不加 flag 同样 exit 1（这次撞的是 `@deepseek-ai/dsh-llm`），加 flag exit 0 并从 lock 里摘干净（`grep -c` 6→0）；README 的回滚命令也补了该 flag。该 flag 只关「pnpm 替 peer 自动补装」，profile 里插件声明的真实依赖不受影响。
 
 发布面同步：v0.3.0 的 GitHub Release 说明已就地改为带该 flag 的安装命令（同一 tag，未新增版本）；工作区 [AGENTS.md](../../../AGENTS.md) 的安装铁律也补了同一参数，避免下一个插件重复踩。
