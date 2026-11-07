@@ -1,6 +1,6 @@
 # Minimal systemd restart — 本地实施计划
 
-状态：F1/F2 修复完成，host 66/66、client 47/47、build/typecheck 通过；README/plan 已按主代理审查修正；本清单已验收，已获准本地提交；实际提交以git记录为准，未安装、未部署、未推送。基线 commit：`dfa78ed12846ba12f697ec0a1c1e3d5ce9a7f5e9`。
+状态：**已交付并上线**（详见文末「交付状态」）。F1/F2 修复完成，host 66/66、client 47/47、build/typecheck 通过；已本地提交、推送、发布 v0.3.0、安装进 web profile 并重启宿主。基线 commit：`dfa78ed12846ba12f697ec0a1c1e3d5ce9a7f5e9`。
 本文件是本地实施计划/任务草案，不是 tracker ticket；不造 `ready-for-agent` 等状态。项目 tracker 配置未完成，后续需运行 `/setup-matt-pocock-skills`。本迭代不另建 ADR 或术语表。
 
 ## 目标
@@ -81,7 +81,7 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 - 读取仅仓库/必要依赖/skill 和 ego 工具文档；禁止凭证/profile 内容、用户服务/远端写入/push/release/gh issue/当前 GUI 验证。
 - 所有删除先核对绝对目标；文本用 read/edit，遵守 HASH；同文件改动批量；bash 必须检查 exit。
 - 实现可串行修改全部批准文件，无其他写代理。
-- 本清单已验收，已获准本地提交；实际提交以git记录为准，未安装、未部署、未推送。
+- 本清单已验收；后续的提交、推送、发布、安装与重启均已完成，结果见文末「交付状态」。
 
 ## 实施结果（2026-11-06，已按主代理要求完成）
 
@@ -106,7 +106,7 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 ## 双轴结论
 
 - 规范轴：主代理独立读 `restart.ts` 后认可 F1/F2 逻辑，无硬违规；`delayMs` 未用、局部 try/catch 冗余为非阻断 smell，未做无谓重构。
-- 需求轴：F1/F2 仅在单调度器实例内保证并已通过 host 66/66；F3 runner 可重跑，最终隔离夹具实际 32/32、finished=true；跨实例共享 DSH_HOME 不承诺，未部署/未真实 systemctl/未对当前 GUI 验证。
+- 需求轴：F1/F2 仅在单调度器实例内保证并已通过 host 66/66；F3 runner 可重跑，最终隔离夹具实际 32/32、finished=true；跨实例共享 DSH_HOME 仍不承诺。**本条撰写时的「未部署」已被后续实测取代**：v0.3.0 已安装并重启，线上路由与浏览器 bundle 已核对，见文末「交付状态」。
 
 ## 验收清单
 

@@ -144,6 +144,7 @@ rm -f ~/.dsh/dsh-restart.flag ~/.dsh/dsh-restart-resume.json
 - **已接受 ≠ 已重启**：202 只表示 flag 已写、timer 已排；3s 后 spawn 失败只体现在日志中，没有查询接口。客户端在网络未知时会明确提示这一点。
 - **单飞只在同一调度器实例**：flag + boot 抑制用于防跨重启循环；热重载会产生新实例，两个实例共享 `DSH_HOME` 时不保证 flag 读写的跨实例原子性，也不提供跨实例锁。`dispose` 清 flag 是 best-effort；进程退出未清时，下一次 boot consume 最多额外抑制 15s。
 - **UI 验证边界**：SSR/HTTP 替身不能替代真实浏览器；浏览器验证使用隔离夹具和 [scripts/verify-ui-browser.mjs](./scripts/verify-ui-browser.mjs)，不会打开当前 GUI。
+- **真实宿主已核对到什么程度**：v0.3.0 装进 web profile 并重启后，运行中的宿主确实注册了 `POST /api/restart-dsh`（GET→405、跨源→403、错 content-type→415、坏 JSON→400，均不触发调度），浏览器拿到的 client bundle 与仓库构建一致。**仍未做的**：没有在真实宿主上按过一次「确认重启」，因此「202 → 3s → systemctl 实际重启成功」这条链路只有 spawn 替身证据。
 
 ## License
 
