@@ -146,4 +146,10 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 - [x] 浏览器 runner 位于 scripts，参数化 URL/task-space；实际 32/32、finished=true，TaskSpace 持有段 try/finally finish
 - [x] ego-browser 实际运行；截图路径与未验项已记录
 - 提交前工作树：41 个受跟踪文件（+1941/−3088），`git diff --check` exit 0；未跟踪 `.scratch/`、`scripts/ui-fixture.mjs`、`scripts/ui-fixture-entry.tsx`、`scripts/verify-ui-browser.mjs`；本清单已验收，已获准本地提交，实际提交以 git 记录为准，未安装、未部署、未推送。
-**交付状态**：本清单已验收，已获准本地提交；实际提交以 git 记录为准，未安装、未部署、未推送。证据：`npm test` exit 0（client 47/47、host 66/66，含 readBody 500）、`npm run typecheck` exit 0、`git diff --check` exit 0。
+**交付状态（2026-11-07 更新）**：代码、测试、本地提交、推送与 GitHub Release v0.3.0 均已完成；**安装与重启未完成**。本会话文件沙箱把整个 `~/.dsh` 挂为只读（`touch ~/.dsh/...` → `EROFS`，`dsh --profile web --dump-config` 也因写 `cordis.yml` 失败），扩大权限的申请在本会话没有应答方，因此没有手改 profile、没有重启。
+
+证据：origin/main = `e439d0068d8b3fc8e90c1e51a87b47ccd0028c70`，tag `v0.3.0` 指向同一 commit；Release 资产 `dsh-restart-systemd-0.3.0.tgz` sha256 `3d04119d945fb0b85186f6c901653664c28f5f2b2d5c1d26c6f9f170d28b05b2` 与本地 `.scratch/release/` 产物一致；`npm test` exit 0（client 47/47、host 66/66），`npm run typecheck` exit 0，`git diff --check` exit 0。
+
+当前 profile 仍运行旧代码：`~/.dsh/profiles/web/pnpm-lock.yaml` 把该包 pin 在 `dfa78ed…`，安装副本 `lib/index.js` 的 sha256 与 `260bd73^` 相同，且 `lib/host/recover.js` 仍在——所以此刻重启只会重启旧插件。
+
+**安装命令已在 profile 的隔离副本上验证（未触碰当前 profile）**：复制 profile 的 `package.json` + `pnpm-lock.yaml` 后，`pnpm add link:<仓库>` 与 `pnpm add github:RoyougiShiki/dsh-restart-systemd` 只有加 `--config.auto-install-peers=false` 才 exit 0；不加则 `ERR_PNPM_NO_MATCHING_VERSION @deepseek-ai/dsh-session@>=0.2.2 <0.3.0-0`（`@michengai/dsh-archive-manager` 的 peer 范围 × `~/.npmrc` 的 npmmirror 源，该区间在 registry 上不存在）。装上后 `lib/index.js` `8c3ed25b…`、`lib/host/restart.js` `efafdfc4…`、`lib/host/gate.js` `29bb94ad…` 与仓库 HEAD 完全一致，`lib/host/` 内无 `recover.*`。

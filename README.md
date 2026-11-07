@@ -72,7 +72,9 @@ npm ci
 npm run build          # tsc -b → lib/，再写 lib/client/index.js 与 lib/client.js
 
 # 装入 web profile（会应用 package.json 的 dsh.bundle.patch）
-dsh plugin --profile web add link:$PWD
+# --config.auto-install-peers=false：pnpm 8 起 auto-install-peers 默认开启，会顺着 peer 列表
+# 现抓 @deepseek-ai/* 运行时包；registry 上没有对应版本时整条命令直接失败
+dsh plugin --profile web add link:$PWD --config.auto-install-peers=false
 
 # 无热重载，需重启生效
 systemctl --user restart dsh-web
