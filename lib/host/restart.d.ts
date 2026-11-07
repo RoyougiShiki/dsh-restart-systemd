@@ -1,49 +1,21 @@
 /**
- * Restart scheduling + state for dsh-restart-systemd (host half).
+ * Restart scheduling + state for the minimal dsh-restart-systemd host half.
  *
- * Owns:
- *  - platform detection AND the exact spawn: `systemctl --user restart dsh-web`
- *    on WSL/Linux (the primary target), and a detached spawn of a helper on
- *    `win32` (the WSL path never reaches it — `process.platform` is `linux`
- *    inside WSL even though the OS is Windows underneath, so the systemctl
- *    branch is what actually runs on this machine).
- *  - the delayed schedule (respond 202 first, spawn after DELAY_MS so the
- *    browser gets its response and agent callbacks flush before the process
- *    dies) with single-flight dedup (a second POST while one is in flight →
- *    409).
- *  - flag-file three-in-one safety (`$DSH_HOME/dsh-restart.flag`: written
- *    before the spawn, consumed-and-deleted once at boot, never re-schedules)
- *    plus a residual-window probe that suppress re-clicks right after a
- *    plugin-driven restart, so a retry loop cannot ping-pong the service.
- *  - the restart-recover handoff: before spawning it snapshots the currently
- *    running agent session ids to `$DSH_HOME/dsh-restart-resume.json`; the
- *    boot side (recover.ts) reads it and later auto-continues each agent whose
- *    turn was interrupted.
- *
- * Spawn is a whitelisted argv array (no shell interpretation, no string
- * concat): `ctx.subprocess.spawn({ argv: [...], cwd, stdio, graceMs })`.
+ * The only supported runtime is a Linux/WSL systemd user unit. The scheduler
+ * writes a one-shot flag before the delayed spawn, keeps a single-flight lock
+ * until the spawn settles, and refuses requests for the residual window after
+ * a plugin-driven boot. It never resumes agents and never reads a session
+ * snapshot.
  * @module dsh-restart-systemd/host/restart
  */
 import type { Context } from '@deepseek-ai/cordis';
-import type { Agent } from '@deepseek-ai/dsh-agent';
-import type { SessionId } from '@deepseek-ai/dsh-session';
 /** Service name the WebUI runs under (systemd user unit). */
 export declare const SYSTEMD_UNIT = "dsh-web";
-/** Delay before the actual spawn — lets the browser receive the 202 response first. */
+/** Delay before the actual spawn, so the browser receives the 202 first. */
 export declare const DELAY_MS = 3000;
-/**
- * After a plugin-driven boot (flag was consumed) the service must run this
- * long before another click is honored, otherwise a retry loop could
- * ping-pong the unit forever.
- */
+/** Re-click suppression window immediately after a plugin-driven boot. */
 export declare const RESIDUAL_WINDOW_MS = 15000;
-/** A restart that was scheduled but not yet executed. */
-export interface PendingRestart {
-    reason: string;
-    sessionIds: SessionId[];
-    scheduledAt: number;
-}
-/** The outcome of a `scheduleRestart` call. */
+/** The outcome of one schedule attempt. */
 export type ScheduleResult = {
     kind: 'scheduled';
     delayMs: number;
@@ -57,65 +29,61 @@ export type ScheduleResult = {
     kind: 'error';
     message: string;
 };
-/** The dsh-restart.flag payload (the resume list is a sibling file). */
+/** The only payload the flag may contain. Extra legacy fields are ignored. */
 export interface RestartFlag {
     reason: string;
     ts: number;
-    sessionIds: SessionId[];
 }
 export interface RestartStatePaths {
     flag: string;
-    resume: string;
+    /** Old auto-resume marker; read only to remove a stale leftover once at boot. */
+    legacyResume: string;
 }
-/** Resolve the two state file paths under the (writable) DSH home. */
+/** Resolve the restart state paths under the writable DSH home. */
 export declare function restartStatePaths(home: string): RestartStatePaths;
-/**
- * True when this host run can restart via the managed path. On WSL/Linux we
- * drive `systemctl --user` directly; on win32 (non-WSL Windows) we spawn a
- * detached helper process that performs the restart and keeps running after
- * this one exits. Node reports `linux` inside WSL, so the systemctl branch is
- * what the primary target actually uses.
- */
-export declare function platformIsManaged(): boolean;
-/** Build the exact argv for the current platform. */
-export declare function restartArgv(): string[];
-/**
- * A platform guard so schedule() refuses platforms we cannot manage. macOS
- * would need launchctl; for now we keep the argv as systemctl for Linux/WSL
- * and only allow win32 + the systemctl platforms.
- */
+/** Only a Linux/WSL systemd user unit is managed by this plugin. */
 export declare function platformSupported(): boolean;
-/** The live single-flight/dedup state for one plugin context. */
+/** The exact whitelisted argv. No shell, no helper, no platform branch. */
+export declare function restartArgv(): string[];
+/** Live single-flight and residual-window state for one plugin context. */
 export declare class RestartScheduler {
     private timer;
+    private disposed;
     private readonly paths;
     private readonly ctx;
-    /** Prevents an auto-reload loop: set when a flag was consumed at a fresh boot. */
     private suppressedUntil;
+    private inFlight;
+    private initPromise;
+    private pendingFlagTs;
     constructor(ctx: Context, home: string);
+    /**
+     * Consume the boot flag exactly once. Requests await the same promise so a
+     * request that arrives while boot state is still being read cannot race the
+     * residual-window suppression.
+     */
+    initialize(): Promise<void>;
+    /**
+     * Read a leftover restart flag (including the old shape with sessionIds),
+     * open the residual window, and remove both the flag and the obsolete
+     * auto-resume marker. The flag is a safety token, never a recovery record.
+     */
     consumeStaleState(): Promise<void>;
     /**
-     * Snapshot the currently *running* agents into the resume file (the trigger
-     * side of restart-recover). Only agents whose status is `running` are
-     * recorded; idle agents do not need to be resumed because nothing was
-     * interrupted.
-     * @param agents - all live agents from the registry.
+     * Schedule one restart. The method is async because preparation can fail:
+     * the single-flight lock is taken first, then the flag write is awaited, and
+     * only a successful write installs the delayed spawn and returns 202-shaped
+     * information. A failed write returns error without spawning.
      */
-    writeResumeState(agents: readonly Agent[], reason: string): Promise<void>;
-    /**
-     * Schedule a restart. Single-flight: a second call while one is in flight →
-     * `already-scheduled` (HTTP 409). Returns 202-shaped info on success. The
-     * actual spawn is deferred DELAY_MS so the HTTP response and any agent
-     * callback flush lands before the process dies.
-     * @param reason - human reason for the restart (audit log + flag).
-     * @param agentRunner - how to enumerate live running agents.
-     */
-    schedule(reason: string, agentRunner: () => readonly Agent[]): ScheduleResult;
-    /** Actually invoke the restart command (whitelisted argv, no shell). */
+    schedule(reason: string): Promise<ScheduleResult>;
+    /** Invoke the fixed systemctl argv; failures are logged, never rethrown. */
     private spawn;
+    /** Remove the flag only when it is still the one written for this attempt. */
+    private clearOwnFlag;
     /** Best-effort, ignore-when-absent unlink. */
     private safeUnlink;
-    /** Used by shutdown/unload to clear a pending timer. */
+    /** Clear a pending timer; an accepted but not-yet-spawned flag is removed. */
+    private log;
+    /** Permanently close this scheduler; an accepted timer is cleared and its flag is removed. */
     dispose(): void;
 }
 //# sourceMappingURL=restart.d.ts.map

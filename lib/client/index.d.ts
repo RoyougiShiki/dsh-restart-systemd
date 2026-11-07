@@ -1,16 +1,8 @@
 /**
- * dsh-restart-systemd — browser half. Registers the `restart-dsh` dictionaries
- * and mounts the sidebar-footer restart trigger into the official
- * `sidebar.footer.action` seat (the slot beside the Settings trigger where
- * remote-web-ui's phone icon lives). Follows the
- * remote-web-ui injection pattern: `ctx.slots.inject(key, () => ctx.slots.register(...))`.
- *
- * The registration injects the runtime's connection lifecycle
- * (`ctx.connection.state`) as a slot hook, so the button can reload the page
- * once a restart it scheduled has actually completed. Everything else about
- * the outage — the retry loop, the "重新连接中" indicator, the click-to-retry
- * affordance — belongs to the client runtime and is deliberately not
- * reimplemented here.
+ * dsh-restart-systemd - browser half. Registers the restart dictionaries and
+ * mounts the sidebar-footer trigger into the official sidebar.footer.action
+ * seat. The button only asks the host for a restart and reports the host's
+ * answer; DSH own connection indicator owns outage/reconnect narration.
  * @module dsh-restart-systemd/client
  */
 import type { Context as ClientContext } from '@deepseek-ai/cordis';
@@ -21,7 +13,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
         'restart-dsh': RestartDshKey;
     }
 }
-export type RestartDshKey = 'restart.label' | 'restart.confirm.title' | 'restart.confirm.body' | 'restart.cancel' | 'restart.proceed' | 'restart.pendingShort' | 'restart.pending' | 'restart.pendingHint' | 'restart.timeout' | 'restart.denied' | 'restart.failedHint' | 'restart.suppressed' | 'restart.unsupported';
+export type RestartDshKey = 'restart.label' | 'restart.confirm.title' | 'restart.confirm.body' | 'restart.cancel' | 'restart.proceed' | 'restart.requesting' | 'restart.requestingHint' | 'restart.accepted' | 'restart.acceptedHint' | 'restart.conflict' | 'restart.suppressed' | 'restart.denied' | 'restart.unsupported' | 'restart.unknown' | 'restart.failed' | 'restart.close';
 /** English dictionary (key-set source of truth). */
 export declare const en: Record<RestartDshKey, string>;
 /** Simplified Chinese dictionary. */

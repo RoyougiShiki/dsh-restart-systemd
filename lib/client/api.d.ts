@@ -1,18 +1,13 @@
 /**
- * Browser-side wire helper for the /api/restart-dsh surface. Plain same-origin
- * fetch with a JSON body (like remote-web-ui's pair-api / the connection
- * client). Returns classified outcomes so the button can render state.
+ * Browser-side wire helper for POST /api/restart-dsh.
  *
- * There is deliberately NO reconnect probe here: the client runtime's own
- * ConnectionController already owns the connect/retry loop (exponential
- * backoff, base 500ms → cap 10s) and publishes its lifecycle on
- * `ctx.connection.state`, which the official ConnectionIndicator renders in
- * the sidebar footer. This module only asks the host to restart and reports
- * what the host answered.
+ * The request has its own 10s AbortController budget. That budget exists only
+ * so a hung HTTP request becomes a visible "unknown" result; it does not wait
+ * for the service to recover and there is no reconnect probe here.
  * @module dsh-restart-systemd/client/api
  */
 export type RestartApiResult = {
-    status: 'scheduled';
+    status: 'accepted';
     delayMs: number;
 } | {
     status: 'already-scheduled';
@@ -23,15 +18,15 @@ export type RestartApiResult = {
 } | {
     status: 'unsupported';
 }
-/** The request never completed — the service may already be going down. */
+/** The request never completed; acceptance is genuinely unknown. */
  | {
-    status: 'unreachable';
+    status: 'unknown';
 } | {
     status: 'error';
     message: string;
 };
 /**
- * POST /api/restart-dsh, classifying HTTP codes into stable outcomes.
+ * POST /api/restart-dsh and classify the host answer.
  * @param reason - why the restart was requested (audit + flag).
  * @returns the classified outcome.
  */

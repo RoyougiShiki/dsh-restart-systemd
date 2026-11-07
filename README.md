@@ -1,206 +1,147 @@
 # dsh-restart-systemd
 
 > **_English summary._**
-> A DeepSeek Harness WebUI **restart button** (systemd edition). Adds a sidebar‑footer
-> restart trigger **next to the remote‑web‑ui phone icon** plus a `/restart` command.
-> Clicking schedules `systemctl --user restart dsh-web` (~3s later, so the browser
-> gets its 202 first), dups are refused (**409**), non‑loopback callers are refused
-> (**403**), and a flag‑file + residual‑window design prevents restart loops.
-> **The reconnect UX belongs to the client runtime, not to this plugin**: the
-> ConnectionController's exponential backoff (500ms→10s) and the official
-> `ConnectionIndicator` — rendered in the sidebar‑foot settings row — own the outage
-> narration and the click‑to‑retry action. This plugin only *consumes*
-> `ctx.connection.state`, to reload the page once so the restarted host's client
-> bundles actually load. Interrupted agent turns are **auto‑resumed** by the host half.
-> Platform: **WSL/Linux → systemctl --user** (primary, tested);
-> **Windows → detached helper** branch is present but unused on WSL.
+> A DeepSeek Harness WebUI **restart button** (Linux/WSL systemd edition). It adds a
+> sidebar-footer restart trigger **next to the remote-web-ui phone icon**. Clicking it
+> asks for confirmation, then schedules `systemctl --user restart dsh-web` about 3
+> seconds later, so the browser receives its **202** first. Duplicate requests are
+> refused (**409**), non-loopback callers are refused (**403**), and a one-shot flag
+> file plus a 15-second suppression window prevents restart loops. The button never
+> tries to reconnect, resume interrupted turns, or reload the page: after **202**, the
+> normal DSH connection state is the source of truth. Platform: **Linux / WSL only**.
 
-**GitHub topics**（主代理创建仓库时使用）: `dsh` · `dsh-plugin` · `restart` · `systemd`
+**GitHub topics** (when the main agent creates the repository): `dsh` · `dsh-plugin` · `restart` · `systemd` · `wsl`
 
 ---
 
 ## 设计总览
 
-双面插件（与 `dsh-client-ui-aionui-panel` 同构）：
+双面插件（host + browser）：
 
 | 半边 | entry（exports） | 运行环境 | 职责 |
 |------|------------------|----------|------|
-| host | `"."` → `lib/index.js` | node（宿主导进） | `/api/restart-dsh` 路由、`/restart` 命令、flag/resume 状态、restart-recover |
-| client | `"./client"` → `lib/client.js` | 浏览器（WebUI） | 侧边栏 footer 重启按钮 + 二次确认 + 消费核心连接状态触发整页刷新 |
+| host | `"."` → [lib/index.js](./lib/index.js) | node（宿主导入） | 注册受 loopback 保护的 `POST /api/restart-dsh`；单飞；写 flag；3s 后 spawn 固定 systemctl argv |
+| client | `"./client"` → [lib/client/index.js](./lib/client/index.js) | 浏览器（WebUI） | 侧边栏 footer 重启按钮、确认框、请求状态与文案 |
 
 ```
 src/
-  index.ts               # host apply()：串联路由 + 命令 + boot 消费/resume
-  host/gate.ts           # loopback fence（照抄 dsh-aionui-panel 的 gate）
-  host/restart.ts        # 调度 + 延迟 spawn + 平台分支 + flag/单飞锁
-  host/recover.ts        # agent/created -> lastTurnInterrupted -> followup continue
-  client/index.ts        # client apply()：locale + sidebar.footer.action 注入 + connection hooks
-  client/RestartButton.tsx   # 按钮 + 确认对话框（内联样式，无需 CSS bundle）
-  client/api.ts          # POST 助手（只发请求，不做重连探活）
+  index.ts                 # host apply(): exact route + body/security handling
+  host/gate.ts             # loopback fence (Host / Origin / Sec-Fetch-Site)
+  host/restart.ts          # flag, single-flight, 3s timer, fixed systemctl argv
+  client/index.ts          # client apply(): locale + sidebar.footer.action
+  client/RestartButton.tsx # button + confirm dialog + result states
+  client/api.ts            # POST helper with a 10s AbortController
 ```
 
-内部依赖：官方 socket `sidebar.footer.action`（list/root additive，remote-web-ui 电话图标同座）；客户端上下文与 slot 服务类型来自 `@deepseek-ai/cordis` 的 `Context` + `dsh-client-ui-renderer` 的声明合并。
+内部依赖：官方 socket `sidebar.footer.action`（list/root additive，remote-web-ui 电话图标同座）；客户端上下文与 slot 服务类型来自 `@deepseek-ai/cordis` 的 `Context` + `dsh-client-ui-renderer` 的声明合并。**不注入** `connection`、`commands`、`agents`、`systemPrompt`。
 
-### 重连由谁负责（v0.2 起）
+## 行为
 
-| 关注点 | 归属 | 说明 |
-|--------|------|------|
-| 断线检测 / 指数退避重试 | **client runtime** | `ConnectionController`（base 500ms → cap 10s，factor 2），插件不探测、不轮询 |
-| 断线提示与「点击立即重连」 | **`ConnectionIndicator`**（`dsh-client-ui-settings-general`） | 渲染在侧边栏底部设置行：`连接异常，点击立即重连` / `重新连接中` / `连接成功`（2s），connecting 最少显示 800ms |
-| 重启请求 / 单飞 / 排障文案 | **本插件** | 只负责 `POST /api/restart-dsh`、确认弹窗与 403/409/429/501 的结果呈现 |
-| 重连后加载新的前端 bundle | **本插件** | 核心不会刷新页面（runtime 重连传输层但继续跑重启前的 JS），故订阅 `ctx.connection.state`，观察到真实断线→恢复后 `location.reload()` 一次 |
+1. 侧边栏 footer 出现重启图标（`wide` 与 `rail` 两种侧栏都可用）；点击打开确认框。
+2. 确认文案：**「重启将中断进行中的任务，不会自动续接。建议任务完成后操作。」**（英文对应项见 [src/client/index.ts](./src/client/index.ts)）。
+3. 确认后按钮进入 `requesting` 并禁用，弹窗不可关闭；请求只发一次。
+4. `202` → 显示 **「重启请求已接受，后续连接状态由 DSH 显示」**。不等待恢复、不轮询、不自动刷新页面、不自动续接会话。
+5. `409` → 已有请求在处理；`429` → 重启后的抑制窗口内；`403` → 非 loopback；`501` → 非 Linux；`500` → 调度准备或 flag 写入失败、调度器已 `dispose`（受控错误）。
+6. 网络断线或 10s 超时 → 显示 **「无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试。」**，不把结果谎报为成功或失败。
+7. `accepted` / `error` 是终态：可关闭弹窗、释放忙锁、再次打开；请求本身已经由服务端接管，客户端不会因 3s 内还没重启就重复发送。
 
-> v0.1 里自研的 `waitForReconnect()`（每 350ms `fetch('/')` + 20s 超时 + `sawDown` 启发式）与 busy/done 分阶文案已删除——它做的事核心做得更准（能区分「真的重连」和「重启前的旧进程还活着」），且 `sessionStorage` 兜底标记随之不再需要。
+## Host 契约
 
-### 重启流程
-
-1. 点按钮（或输入 `/restart`）→ 二次确认：“进行中的 agent 任务将中断并自动续接。页面会自行重连，并在服务恢复后自动刷新。”
-2. 确认 → `POST /api/restart-dsh`（或命令回调）。
-3. host 把**当前 running** 的 agent id 快照到 `$DSH_HOME/dsh-restart-resume.json`，写 flag `$DSH_HOME/dsh-restart.flag`，随即回 **202 `{scheduled:true, delayMs:3000}`**。
-4. 3s 后 host 用**白名单 argv**（无 shell 拼串）spawn `systemctl --user restart dsh-web`。服务重启；浏览器靠 ConnectionController 指数退避（500ms→10s）**自动重连，无需手动刷新**，核心指示器同步显示断线与恢复。
-5. 页面观察到断线→恢复后自动 `location.reload()` 一次（换掉重启前的前端 bundle）；45s 内始终未恢复则弹超时提示并指向 `systemctl --user status dsh-web`。
-6. 重启后插件先消费（删除）flag token，再装上 `agent/created` 监听、读取并立即消费 resume 列表——对每个**最后 turn 被中断**（存在未闭合 `turn/start`，或最近的 `turn/end.reason.kind === 'interrupted'`）的会话，`agent.followup("Continue.")` 自动续接；idle/正常结束的会话绝不打扰。**续接没有截止时间**：会话什么时候被重新打开就什么时候续接（浏览器自动重连通常是秒级，用户稍后回来也可以）。
-
-### 平台三态
-
-| 平台 | 行为 | 代码位置 |
-|------|------|----------|
-| **WSL** | `process.platform === 'linux'` → `systemctl --user restart dsh-web`（**本机主场景，已实测**） | `restartArgv()` / `platformSupported()` |
-| **Linux** | 同上（systemd 用户态） | 同上 |
-| **Windows（原生 win32，非 WSL）** | `spawn(process.execPath, [helper, 'win-restart.mjs'])` detached helper，重启可脱离当前进程存活（机器相关，WSL 场景不走此分支） | 同上 |
-
-## 安全（三合一 + 单飞）
-
-- **flag 文件** `$DSH_HOME/dsh-restart.flag`：spawn 前写入，boot 消费一次即删，绝不自行触发重启 → 残留 flag 无法造成二次重启。
-- **残留窗口**：插件驱动的 boot（flag 被消费）后 15s 内再次点击 → **429**，防重试乒乓。
-- **单飞锁**：已有一发在途时重复 POST → **409**。
-- **loopback fence**：socket/Host 非 127.0.0.1/::1 或 `sec-fetch-site === 'cross-site'` 或 Origin 不同源 → **403**；`X-Forwarded-For` 永不被信任。
+- 只注册 **exact** `POST /api/restart-dsh`；没有 `/restart` 命令、没有恢复快照、没有 agent 续接、没有状态查询 API。
+- 安全：`isLoopbackRequest` 拒绝非 loopback Host、非 loopback socket、`sec-fetch-site: cross-site`、不同源 Origin；不信任 `X-Forwarded-For`。`403 forbidden: loopback-only`。
+- 请求体：空 body 允许；非 JSON content-type → **415**；无效 JSON / 读流异常 → **400**；超过 1MB → **413**。所有读取异常都在 handler 内收敛，不产生 unhandled rejection。
+- 调度：`schedule(reason)` 是 async：先立单飞锁，再 `await` 写 `$DSH_HOME/dsh-restart.flag`（`{ reason, ts }`），成功后才启动 **3000ms** timer 并回 **202 `{scheduled:true,delayMs:3000}`**；调度准备或写失败回 **500**，不 spawn，清理本次 flag 后才释放锁，之后可重试。
+- 已接受后到 spawn 或失败清理结束保持锁；重复请求 **409 `already-scheduled`**。`dispose` 永久关闭该 scheduler，清 timer，并尽力删除尚未 spawn 的本次 flag（只在 `flagTs` 仍是本次时间戳时删）；dispose 发生在初始化、写 flag 或请求体读取期间时，恢复后返回受控错误且不安装 timer，若本次 flag 已写则清理。
+- spawn 参数固定为 `['systemctl','--user','restart','dsh-web']`，`cwd=process.cwd()`，`stdin:'ignore'`、stdout/stderr inherit、`graceMs=10000`；不自行拉进程、不拼接 shell。
+- 延迟 spawn 的同步 throw、done reject、非 0 退出、定时器安装失败：只记可见日志（error/warn），**不会**把已经发出的 202 改成 500；失败时清理本次 flag，并在同一 attempt 的清理完成后才释放单飞锁，允许用户重试。所有异步链都 catch；日志器本身抛错不逃逸。
+- boot：`initialize()` 消费残留 flag（兼容旧 flag 的多余字段，例如 `sessionIds`），删除 flag 与旧版 `dsh-restart-resume.json`，并在 **15000ms** 内把请求回为 **429 `suppressed`**。请求会 `await` 这个初始化 promise，boot 竞争不会漏掉抑制。
+- 平台：仅 `process.platform === 'linux'`（含 WSL）支持；其他平台 **501 `unsupported-platform`**，不 spawn。
 
 ### 状态文件（`$DSH_HOME` → `~/.dsh`）
 
 | 文件 | 用途 |
 |------|------|
-| `dsh-restart.flag` | 一次性 boot token `{ reason, ts, sessionIds }` |
-| `dsh-restart-resume.json` | 续接列表 `{ ts, reason, sessionIds }` |
-
----
-
-## 独立仓库 / 发布形态
-
-本目录即一个**独立 Git + npm 包**（社区格式 `dsh-<feature>`，systemd 版包名唯一且表意）：
-
-- `package.json` 已补全：`name: dsh-restart-systemd`、`version: 0.1.0`、`license: MIT`、
-  `repository`（GitHub 占位 `https://github.com/<your-org>/dsh-restart-systemd.git`，主代理稍后创建）、
-  `keywords`（`['dsh','dsh-plugin','deepseek-harness','restart','systemd','systemctl','wsl','webui']`）、
-  `files`（`lib, src, cordis.patch.yml, README.md, LICENSE`）、`dsh.bundle.patch` ⇒ `./cordis.patch.yml`。
-- `LICENSE` 已就位（MIT，2026 contributors）。
-- `cordis.patch.yml` 注入一行双面插件，安装后 host+client 同时挂载，无需手改 bundle：
-  ```yaml
-  - insert:
-      - id: ui-dsh-restart-systemd
-        name: dsh-restart-systemd
-  ```
-
-**创建 GitHub 仓库时建议 topics**：`dsh`、`dsh-plugin`、`restart`、`systemd`。
+| `dsh-restart.flag` | 一次性 boot token `{ reason, ts }`；成功重启后留在磁盘，由下一次 boot 消费 |
+| `dsh-restart-resume.json` | 旧版遗留文件，仅启动时删除；本版不读取、不写入 |
 
 ## 安装
 
 ```bash
-# 1) 构建（需 devDependencies）
 cd dsh-restart-systemd
-npm install
-npm run build          # tsc -b → lib/（host=lib/index.js，client=lib/client.js，内联样式无需 CSS bundle）
+npm ci
+npm run build          # tsc -b → lib/，再写 lib/client/index.js 与 lib/client.js
 
-# 2) 装入 web profile（注册 bundle + 补丁插件行）
-dsh plugin --profile web add /tmp/dsh-restart-systemd
-#    或 pnpm add /tmp/dsh-restart-systemd + 手补 cordis.patch.yml 行到 profile bundle 列表
+# 装入 web profile（会应用 package.json 的 dsh.bundle.patch）
+dsh plugin --profile web add link:$PWD
 
-# 3) 无热重载，需重启生效
+# 无热重载，需重启生效
 systemctl --user restart dsh-web
 ```
-
-`exports."."` → `lib/index.js`，`exports."./client"` → `lib/client.js`；`main`/`types` 与之对应。
+`exports."."` → [lib/index.js](./lib/index.js)；`exports."./client"` → [lib/client/index.js](./lib/client/index.js)；`main`/`types` 与之对应。仓库同时保留 [lib/client.js](./lib/client.js) 作为浏览器 bundle 的构建产物。
 
 ### 依赖版本
 
-v0.2 起 devDependencies 对齐 **DSH 0.1.7-rc.1**（v0.1 编译于 0.1.0-rc.6，其 `ConnectionHandle` 还没有 `state`；`dsh-client-runtime` 包已被上游移除，客户端上下文改用 `@deepseek-ai/cordis` 的 `Context`，slot 服务由 `dsh-client-ui-renderer` 声明）。
-
-对宿主的运行时要求很宽松：`connection` 服务是**软读取**（`ctx.get('connection')`，不写进 `inject`）。宿主没有该服务或版本更老时，重启按钮与 `/restart` 命令照常工作，只是不再自动整页刷新。
+devDependencies 对齐 **DSH 0.1.7-rc.1**，Node `^22.19.0 || >=24.0.0`。host 不需要 `dsh-commands`、`dsh-agent`、`dsh-session`、`dsh-llm`；client 不需要 `dsh-client-connection`。
 
 ## 验证
 
 ```bash
-npm test            # = build + 下面四套（共 87 项）
-npm run test:client # 41 项：客户端 bundle 接线 / 刷新状态机 / 渲染与文案
-npm run test:host   # 25 项：续接判定全分支 / arm 端到端 / 无截止时间 / inject 声明
-npm run test:wiring # 11 项：真 cordis 下的服务拓扑与 inject 解析
-npm run test:cycle  # 10 项：整个宿主链路（写快照 → boot 消费 → 续接）
+npm test             # build + client + host
+npm run test:client  # bundle 接线 / 无连接钩子 / SSR / locale 键集合
+npm run test:host    # exact route / gate / 202-409-429-501-500 / flag / spawn 替身
+npm run typecheck
 ```
 
-后两套用**真 cordis 加载真插件**，并把 `subprocess.spawn` 打桩——因此**不需要重启服务**就能验证宿主半边，物理上也不可能触发重启。`test:cycle` 尤其关键：它按真实拓扑（`agents` 由**兄弟**插件提供）跑完整循环——重启写快照 → 下一个进程 boot 消费 flag/resume → `arm()` 装监听 → `agent/created` 触发 → 只有「最后 turn 被中断」的会话收到 `Continue.`。
+两套测试都**不启动真实 systemctl、不向 3080 或真实 profile 发请求**：
+- [scripts/verify-host.mjs](./scripts/verify-host.mjs) 用真实 loopback HTTP + `subprocess.spawn` 硬替身，`DSH_HOME` 全部指向临时目录；覆盖取消/单飞/延迟/flag 失败/平台拒绝/spawn 失败日志/dispose 与请求体或 flag 写入期间的清理/清理期间 409/清理后重试/unhandled=0。
+- [scripts/verify-client.mjs](./scripts/verify-client.mjs) 通过 loader 协议加载 [lib/client/index.js](./lib/client/index.js)，检查运行时 require 仅 `react`、`react-dom`、`react/jsx-runtime`，再做 SSR 渲染与中英字典覆盖；它是**接线/文案级**验证，不是浏览器点击验证。
+- 浏览器交互（确认、取消、双击、202/409/429/403/501/500、断线未知、10s 超时、关闭重开、wide/rail）通过 [scripts/ui-fixture.mjs](./scripts/ui-fixture.mjs) + [scripts/ui-fixture-entry.tsx](./scripts/ui-fixture-entry.tsx) 的临时静态 React 夹具，在隔离浏览器 TaskSpace 中运行 [scripts/verify-ui-browser.mjs](./scripts/verify-ui-browser.mjs) 验证；夹具只 mock `/api/restart-dsh`，不连接当前 GUI、不调用真实 systemctl。
+- 夹具绑定 `0.0.0.0` 只是为了另一台主机（例如 Windows）上的 ego-browser 能访问 WSL 内的夹具；它不是 DSH 服务，也不是插件的监听面。浏览器脚本需要外部 ego-browser，不进入 `npm test`，也不硬编码浏览器路径。
 
-> **对照实验**：把同一套 `test:cycle` 跑在修复前的构建上，快照是 `sessionIds: []`（自动续接永远不可能触发）；跑在修复后是 `["session-interrupted","session-clean"]`。测试对 bug 敏感，不是空测试。
+### 浏览器验证（单独运行，不进入 npm test）
 
-`scripts/verify-client.mjs` 在没有浏览器、也不重启线上服务的前提下验三件事：
-1. **loader 接线**：按 DSH 加载器的方式 boot `lib/client/index.js`，断言注册的 slot / locale / `hooks.connectionState`，以及运行时 require 只有 `react`、`react-dom`、`react/jsx-runtime` 三个 seed word；
-2. **重启-刷新状态机**：`restartReloadDecision` 的全部分支，重点是「观察到真实断线之前的 `connected` 绝不触发刷新」（宿主在 ~3s 调度延迟内仍由重启前的进程应答）；
-3. **渲染 + 文案覆盖**：SSR 渲染组件，并断言源码里用到的每个 `t('restart.*')` 键在中英两本字典里都存在、且没有多余键。
+```bash
+npm run fixture
+# 复制输出的 FIXTURE_URL
+node scripts/verify-ui-browser.mjs --url <FIXTURE_URL> --task-space <隔离任务名>
+```
 
-`scripts/verify-host.mjs` 盯住续接判定这条最危险的逻辑（两个方向都会坏：太激进 = 给正常结束的会话发多余 turn；太保守 = 中断的 turn 永远不续接）：
-1. **`lastTurnInterrupted` 全分支**：未闭合 turn / `interrupted` / `completed` / `aborted` / `blocked` / `error` / `max-tokens` / 空日志 / 日志不可读（兜底为续接）；
-2. **`arm()` 端到端**：只有「在快照里 **且** 最后 turn 确实被中断」的会话才会收到一条 `Continue.`，且该消息带本插件自有 source kind；正常结束或不在快照里的会话一条都不发；
-3. **续接没有 boot 相对截止时间**：晚到的会话恢复仍会被续接；标记文件读取即消费（第二次 boot 无法据其重新武装）；同一个 id 最多只续接一次；
-4. **`inject` 必须声明 `agents`**：这是让快照不为空的前提（见下）。
+`--ego <command>` 或 `EGO_BROWSER` 可指定 ego-browser（默认 `ego-browser`）。脚本生成 Node 脚本源码并通过 stdin 交给 ego-browser，不写入仓库；它覆盖确认/取消、双击、202/409/429/403/501/500、断线未知、10s 超时、关闭重开和 wide/rail。脚本在 TaskSpace 持有段包 `try/finally`，成功或失败都会 `finish({ keep: [] })` 清理本次任务。本次已在隔离 TaskSpace 实际运行 32/32（`finished=true`）；fixture server 与 job 已终止，不打开当前 GUI。
 
-> 这套用例是有来历的，三条都是实测事故：
-> 1. 升级到 0.1.7-rc.1 后 `agent.session.events` 被 `snapshotEvents()` 取代，旧代码抛出的 TypeError 被 `try/catch` 吞掉，于是 `lastTurnInterrupted()` **对任何会话都返回 true**。实测把旧实现对着新 Session 形状跑，4/4 个「干净结束」用例全判成需要续接——即会给快照里每个会话都灌一条 `Continue.`。
-> 2. 早先的实现以 boot 为基准给 60s 截止时间。实测本机一次重启：会话 18:40:58 被打断，直到 21:06 才被恢复，那时 `pending` 已清空，**续接完全没发生**。现在改为「等会话被打开，没有截止时间」。
-> 3. **最隐蔽的一条**：`inject` 漏了 `agents`。cordis 只给已声明依赖解析服务，而提供方（dsh-base 的 `agent` 行）与插件是**根级兄弟**、不是祖先，于是读 `ctx.agents` 抛 `cannot get property "agents" without inject`，又被 `catch { return [] }` 吞成空数组——**每次重启快照都是 `[]`，自动续接从头到尾就没工作过**，日志里只留一句 `recorded 0 running agent(s)`，看着像"当时没任务在跑"。现在改为失败时 `logger.warn` 明说"本次不会续接任何会话"，并打出 `live=N (id:status, …)` 让空快照一眼可辨。
+## HTTP API
 
-线上手工验收：
-
-1. **插件加载**：新会话打开；`journalctl --user -u dsh-web` 出现 `dsh-restart-systemd: ...`。
-2. **侧边栏按钮**：设置按钮旁的 footer 行出现重启图标（在 remote-web-ui 电话图标旁边），悬停标题“重启 DeepSeek Harness”。
-3. **点击→确认→202→重启**：确认后弹窗显示“已请求重启”，~3s 后服务重启；此时**侧边栏底部设置行**出现核心的连接指示器（`连接中断，正在重试，点击立即重连` → `重新连接中` → `连接成功`），页面自行重连，随后自动整页刷新一次：
-   - journald 依次出现 `restart scheduled … delayMs=3000` → `spawning restart for dsh-web …` → 新 boot 的 `consumed leftover restart flag`。
-   - 重启按钮在等待期间显示 spinner 且禁用；若 45s 内始终未恢复，弹窗改为超时提示。
-4. **`/restart` 命令**：聊天输入 `/restart` → 返回确认文本。
-5. **会话自动续接**：重启前若有 running agent，boot 后 journald 出现 `recovery armed for N session(s)` 与 `resuming interrupted agent <id>`，agent 自动继续。
-6. **单飞**：快速点两次 → 第二次返回 **409** `already-scheduled`。
-7. **loopback**：`curl -H 'Host: evil.example' -X POST http://127.0.0.1:3080/api/restart-dsh` → **403** `forbidden: loopback-only`。
-8. 失败兜底：`systemctl --user status dsh-web` 确认单元存活。
+| 情况 | 状态码 | body 关键字段 |
+|------|--------|----------------|
+| 接受调度 | 202 | `{scheduled:true, delayMs:3000}` |
+| 已有请求在途 | 409 | `already-scheduled` |
+| boot 后 15s 内 | 429 | `suppressed` |
+| 非 loopback / 跨源 | 403 | `forbidden: loopback-only` |
+| 非 Linux | 501 | `unsupported-platform` |
+| 调度准备/flag 写入失败、已 dispose | 500 | `restart-failed` |
+| 非 POST | 405 | 受控错误 |
+| 非 JSON content-type | 415 | 受控错误 |
+| 无效 JSON / 读流失败 | 400 | `invalid-json` / `invalid-body` |
+| body 超过 1MB | 413 | `body-too-large` |
 
 ## 回滚
 
 ```bash
-dsh plugin --profile web remove ui-dsh-restart-systemd
-# 或手删包 + bundle 行后
+dsh plugin --profile web remove dsh-restart-systemd
 systemctl --user restart dsh-web
-# 清理残留状态（随时可删）
+# 可选：清理残留状态
 rm -f ~/.dsh/dsh-restart.flag ~/.dsh/dsh-restart-resume.json
 ```
 
-重启后按钮与命令即消失，不改动其它配置。
-
-## 平台说明
-
-- **WSL/Linux**：`systemctl --user restart dsh-web`，主目标已实测。
-- **Windows（原生，非 WSL）**：`restartArgv()` 走 detached `spawn(process.execPath, [helper])`
-  `win-restart.mjs`（未随包附带；参考 anweat/dsh-restart 的 detached helper、
-  LnsiAxe/dsh-web-restart 的 WMI `Win32_Process.Create`、shaoyi1991 的 lsof 杀端口+spawn）。
-  路由、单飞、flag、loopback fence、restart-recover 均平台无关。WSL 本机场景不进入此分支。
-- 重启后**前端自动重连，无需手动刷新**（ConnectionController 指数退避 500ms→10s），并在恢复后自动整页刷新一次。
+回滚后按钮消失，不改动其它配置。
 
 ## 已知限制
 
-- **单一服务单元**：systemctl 命令固定 `dsh-web`（`SYSTEMD_UNIT`）。
-- **非 systemctl 启动则不生效**：若以 `node …` 手跑，spawn systemctl 会失败并记日志，不产生重启。
-- **续接等待会话被恢复，没有截止时间**：重启前记录的会话一旦被重新打开（浏览器自动重连、或用户稍后回到该对话）就会续接，无论隔了多久。判定门槛是「最后 turn 确实被中断」——用户若已手动恢复过，那个 turn 会以 `completed`/`aborted` 收尾，从而被跳过，所以不会打扰。仍在快照里但始终没被打开的会话（例如无头运行）只是留在内存里，不再写回磁盘：`dsh-restart-resume.json` 在读取时即被消费（删除），与 flag 同为一次性令牌。
-- **Windows helper 为占位**：仅提供 spawn 目标，helper 本体机器相关，超出 WSL 主目标范围。
-- 路由避开 `/plugins`（官方 client-modules 拥有该前缀），仅注册 `/api/restart-dsh`，无 bundle 供数冲突。
-- **折叠（rail）侧边栏下核心不渲染连接指示器**：`ConnectionIndicator` 仅在 `wide` 时挂载（`sidebar.toggle.badge` 也会在断线时隐藏）。此时用户只能看到重启按钮自身的 spinner/禁用态；展开侧边栏即可看到核心的断线/重连提示。
-- **续接消息的 source.kind 变了**：v0.1 用的是已废弃的共享 `kind: 'plugin'`，v0.2 按 harness 设计改为本插件自有的 `kind: 'dsh-restart-systemd'`（`MessageSourceMap` 合并扩展）。任何按 `source.kind === 'plugin'` 过滤注入消息的插件（如 `dsh-handoff-wall` 的取材过滤）需同步加上这个新 kind，否则 `Continue.` 会被当作真实对话取走。
-- **不写入系统提示词**（v0.1 的注入已删除）：v0.1 用过 `ctx.systemPrompt.section({ name: 'plugin:dsh-restart-systemd', order: 215 })`，把一段运维说明广播给**每个会话、每一轮、以及每个子代理**。删除理由有三：重启面是**人**的能力（侧边栏按钮 + `/restart`），而 `dsh-commands` 的契约是命令注册表**不进任何模型请求**（"Command discovery, execution, and UI output add no model tokens"），所以那段文字买不到任何模型行为改变；它的体裁是 README（HTTP 202/409/403、3s 延迟、`journalctl` 排障），不是祈使句形式的行为指令，官方 prompt 段落（`dsh-tool-jobs`、`dsh-tool-fs` 等）全是后者；而且它的断言在 v0.2 修好之前一直是假的——它声称「重启前记录会话、重启后自动续接」，而 `1e4206d` 之前 `inject` 漏了 `agents`，快照恒为空、自动续接从未生效。能力发现走命令/工具描述，人类说明留在本 README。`scripts/verify-host.mjs` 用 `!inject.includes('systemPrompt')` 钉住这条。
+- **仅 Linux/WSL**：没有 Windows helper、没有平台分支；非 Linux 返回 501。
+- **服务单元固定**：argv 恒为 `systemctl --user restart dsh-web`；若以其它方式启动 DSH，spawn 会失败并记日志，不会产生重启。
+- **不自动续接、不自动刷新**：进行中的 agent 任务会被重启中断；页面是否恢复、何时恢复由 DSH 连接层决定，本插件不轮询、不刷新、不注入 `Continue.`。
+- **已接受 ≠ 已重启**：202 只表示 flag 已写、timer 已排；3s 后 spawn 失败只体现在日志中，没有查询接口。客户端在网络未知时会明确提示这一点。
+- **单飞只在同一调度器实例**：flag + boot 抑制用于防跨重启循环；热重载会产生新实例，两个实例共享 `DSH_HOME` 时不保证 flag 读写的跨实例原子性，也不提供跨实例锁。`dispose` 清 flag 是 best-effort；进程退出未清时，下一次 boot consume 最多额外抑制 15s。
+- **UI 验证边界**：SSR/HTTP 替身不能替代真实浏览器；浏览器验证使用隔离夹具和 [scripts/verify-ui-browser.mjs](./scripts/verify-ui-browser.mjs)，不会打开当前 GUI。
 
 ## License
 

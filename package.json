@@ -1,7 +1,7 @@
 {
   "name": "dsh-restart-systemd",
   "version": "0.3.0",
-  "description": "WebUI restart button (systemd) for DeepSeek Harness: a sidebar-footer restart trigger + /restart command that schedules `systemctl --user restart dsh-web`, with single-flight dedup, a loopback security fence, automatic session resume (agent/created -> followup continue) after the service comes back up, and a post-restart page reload driven by the client runtime's own connection state. WSL/Linux primary; Windows falls back to a detached spawn helper.",
+  "description": "WebUI restart button (systemd) for DeepSeek Harness: a sidebar-footer restart trigger that schedules systemctl --user restart dsh-web on Linux/WSL, with single-flight dedup, a loopback security fence, and a post-restart suppression flag.",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -49,7 +49,6 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-client-connection",
         "@deepseek-ai/dsh-client-ui-renderer",
         "@deepseek-ai/dsh-client-ui-sidebar"
       ],
@@ -61,20 +60,13 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-client-connection": "^0.1.7-rc.1",
     "@deepseek-ai/dsh-client-locale": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-client-store": "^0.1.7-rc.1",
     "@deepseek-ai/dsh-client-ui-renderer": "^0.1.7-rc.1",
     "@deepseek-ai/dsh-client-ui-sidebar": "^0.1.7-rc.1",
     "@deepseek-ai/dsh-client-ui-slots": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-commands": "^0.1.7-rc.1",
     "@deepseek-ai/dsh-home-paths": "^0.1.7-rc.1",
     "@deepseek-ai/dsh-host-webserver": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-llm": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-session": "^0.1.7-rc.1",
     "@deepseek-ai/dsh-subprocess": "^0.1.7-rc.1",
-    "@deepseek-ai/dsh-system-prompt": "^0.1.7-rc.1",
     "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.0",
@@ -88,12 +80,11 @@
   },
   "license": "MIT",
   "scripts": {
-    "build": "tsc -b && node scripts/build-client.mjs",
-    "typecheck": "tsc -b --build --pretty false",
-    "test": "npm run build && npm run test:client && npm run test:host && npm run test:wiring && npm run test:cycle",
+    "build": "node ./node_modules/typescript/bin/tsc -b && node scripts/build-client.mjs",
+    "typecheck": "node ./node_modules/typescript/bin/tsc -b --pretty false",
+    "test": "npm run build && npm run test:client && npm run test:host",
     "test:client": "node scripts/verify-client.mjs",
     "test:host": "node scripts/verify-host.mjs",
-    "test:wiring": "node scripts/verify-agents-inject.mjs",
-    "test:cycle": "node scripts/verify-full-cycle.mjs"
+    "fixture": "node scripts/ui-fixture.mjs"
   }
 }

@@ -1,239 +1,242 @@
 /**
- * Restart scheduling + state for dsh-restart-systemd (host half).
+ * Restart scheduling + state for the minimal dsh-restart-systemd host half.
  *
- * Owns:
- *  - platform detection AND the exact spawn: `systemctl --user restart dsh-web`
- *    on WSL/Linux (the primary target), and a detached spawn of a helper on
- *    `win32` (the WSL path never reaches it — `process.platform` is `linux`
- *    inside WSL even though the OS is Windows underneath, so the systemctl
- *    branch is what actually runs on this machine).
- *  - the delayed schedule (respond 202 first, spawn after DELAY_MS so the
- *    browser gets its response and agent callbacks flush before the process
- *    dies) with single-flight dedup (a second POST while one is in flight →
- *    409).
- *  - flag-file three-in-one safety (`$DSH_HOME/dsh-restart.flag`: written
- *    before the spawn, consumed-and-deleted once at boot, never re-schedules)
- *    plus a residual-window probe that suppress re-clicks right after a
- *    plugin-driven restart, so a retry loop cannot ping-pong the service.
- *  - the restart-recover handoff: before spawning it snapshots the currently
- *    running agent session ids to `$DSH_HOME/dsh-restart-resume.json`; the
- *    boot side (recover.ts) reads it and later auto-continues each agent whose
- *    turn was interrupted.
- *
- * Spawn is a whitelisted argv array (no shell interpretation, no string
- * concat): `ctx.subprocess.spawn({ argv: [...], cwd, stdio, graceMs })`.
+ * The only supported runtime is a Linux/WSL systemd user unit. The scheduler
+ * writes a one-shot flag before the delayed spawn, keeps a single-flight lock
+ * until the spawn settles, and refuses requests for the residual window after
+ * a plugin-driven boot. It never resumes agents and never reads a session
+ * snapshot.
  * @module dsh-restart-systemd/host/restart
  */
 
 import { readFile, writeFile, unlink } from 'node:fs/promises'
-import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-subprocess'
-import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { SessionId } from '@deepseek-ai/dsh-session'
-
-/** Absolute directory of the compiled host entry (used to locate the Windows helper). */
-const DIR = dirname(fileURLToPath(import.meta.url))
 
 /** Service name the WebUI runs under (systemd user unit). */
 export const SYSTEMD_UNIT = 'dsh-web'
-/** Delay before the actual spawn — lets the browser receive the 202 response first. */
+/** Delay before the actual spawn, so the browser receives the 202 first. */
 export const DELAY_MS = 3000
-/**
- * After a plugin-driven boot (flag was consumed) the service must run this
- * long before another click is honored, otherwise a retry loop could
- * ping-pong the unit forever.
- */
+/** Re-click suppression window immediately after a plugin-driven boot. */
 export const RESIDUAL_WINDOW_MS = 15000
 
-/** A restart that was scheduled but not yet executed. */
-export interface PendingRestart {
-  reason: string
-  sessionIds: SessionId[]
-  scheduledAt: number
-}
-
-/** The outcome of a `scheduleRestart` call. */
+/** The outcome of one schedule attempt. */
 export type ScheduleResult =
   | { kind: 'scheduled'; delayMs: number }
-  | { kind: 'already-scheduled' }        // single-flight: one is in flight
-  | { kind: 'suppressed' }               // residual window right after a plugin boot
-  | { kind: 'unsupported' }              // an unmanaged platform
+  | { kind: 'already-scheduled' }
+  | { kind: 'suppressed' }
+  | { kind: 'unsupported' }
   | { kind: 'error'; message: string }
 
-/** The dsh-restart.flag payload (the resume list is a sibling file). */
+/** The only payload the flag may contain. Extra legacy fields are ignored. */
 export interface RestartFlag {
   reason: string
   ts: number
-  sessionIds: SessionId[]
 }
 
 export interface RestartStatePaths {
   flag: string
-  resume: string
+  /** Old auto-resume marker; read only to remove a stale leftover once at boot. */
+  legacyResume: string
 }
 
-/** Resolve the two state file paths under the (writable) DSH home. */
+/** Resolve the restart state paths under the writable DSH home. */
 export function restartStatePaths(home: string): RestartStatePaths {
   return {
     flag: join(home, 'dsh-restart.flag'),
-    resume: join(home, 'dsh-restart-resume.json'),
+    legacyResume: join(home, 'dsh-restart-resume.json'),
   }
 }
 
-/**
- * True when this host run can restart via the managed path. On WSL/Linux we
- * drive `systemctl --user` directly; on win32 (non-WSL Windows) we spawn a
- * detached helper process that performs the restart and keeps running after
- * this one exits. Node reports `linux` inside WSL, so the systemctl branch is
- * what the primary target actually uses.
- */
-export function platformIsManaged(): boolean {
-  return process.platform === 'win32' || process.platform === 'linux' || process.platform === 'darwin'
+/** Only a Linux/WSL systemd user unit is managed by this plugin. */
+export function platformSupported(): boolean {
+  return process.platform === 'linux'
 }
 
-/** Build the exact argv for the current platform. */
+/** The exact whitelisted argv. No shell, no helper, no platform branch. */
 export function restartArgv(): string[] {
-  if (process.platform === 'win32') {
-    // Windows (non-WSL) branch: resolve `process.execPath` and a bundled
-    // restart helper, spawned detached so it outlives this process. The helper
-    // path is resolved lazily (written at build/install time) and the spawn is
-    // held until schedule() actually runs.
-    return [process.execPath, join(DIR, '..', 'win-restart.mjs')]
-  }
-  // WSL / Linux / macOS: systemctl --user restart <unit>. macOS has no
-  // systemctl; this branch still builds the argv and the caller guards it.
   return ['systemctl', '--user', 'restart', SYSTEMD_UNIT]
 }
 
-/**
- * A platform guard so schedule() refuses platforms we cannot manage. macOS
- * would need launchctl; for now we keep the argv as systemctl for Linux/WSL
- * and only allow win32 + the systemctl platforms.
- */
-export function platformSupported(): boolean {
-  // Windows detached-helper path plus Linux/WSL systemctl are supported.
-  if (process.platform === 'win32') return true
-  if (process.platform === 'linux') return true
-  // macOS and other POSIX would need launchctl/other manager — not supported yet.
-  return false
-}
-
-/** The live single-flight/dedup state for one plugin context. */
+/** Live single-flight and residual-window state for one plugin context. */
 export class RestartScheduler {
   private timer: NodeJS.Timeout | undefined
+  private disposed = false
   private readonly paths: RestartStatePaths
   private readonly ctx: Context
-  /** Prevents an auto-reload loop: set when a flag was consumed at a fresh boot. */
   private suppressedUntil = 0
+  private inFlight = false
+  private initPromise: Promise<void> | undefined
+  private pendingFlagTs: number | undefined
 
   constructor(ctx: Context, home: string) {
     this.ctx = ctx
     this.paths = restartStatePaths(home)
   }
+
+  /**
+   * Consume the boot flag exactly once. Requests await the same promise so a
+   * request that arrives while boot state is still being read cannot race the
+   * residual-window suppression.
+   */
+  initialize(): Promise<void> {
+    if (this.initPromise === undefined) this.initPromise = this.consumeStaleState()
+    return this.initPromise
+  }
+
+  /**
+   * Read a leftover restart flag (including the old shape with sessionIds),
+   * open the residual window, and remove both the flag and the obsolete
+   * auto-resume marker. The flag is a safety token, never a recovery record.
+   */
   async consumeStaleState(): Promise<void> {
-    let flag: RestartFlag | null = null
+    let raw: string | undefined
     try {
-      const raw = await readFile(this.paths.flag, 'utf8')
-      flag = JSON.parse(raw) as RestartFlag
-    } catch {
-      flag = null
+      raw = await readFile(this.paths.flag, 'utf8')
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code
+      if (code !== 'ENOENT') this.log('warn', 'dsh-restart-systemd: could not read restart flag: ' + String(error))
     }
-    if (flag !== null) {
-      // A plugin-driven boot just happened. Suppress re-clicks for a window so
-      // a retry loop cannot ping-pong the unit; deleting the flag makes it a
-      // one-shot token that can never re-trigger a restart on its own.
+
+    if (raw !== undefined) {
       this.suppressedUntil = Date.now() + RESIDUAL_WINDOW_MS
-      this.ctx.logger.info(`dsh-restart-systemd: consumed leftover restart flag from ${new Date(flag.ts).toISOString()} (reason=${flag.reason ?? 'unknown'})`)
-      await this.safeUnlink(this.paths.flag)
-      return
+      let reason = 'unknown'
+      let stamp = 'unknown'
+      try {
+        const parsed = JSON.parse(raw) as Partial<RestartFlag>
+        if (parsed !== null && typeof parsed === 'object') {
+          if (typeof parsed.reason === 'string' && parsed.reason !== '') reason = parsed.reason
+          if (typeof parsed.ts === 'number' && Number.isFinite(parsed.ts)) stamp = new Date(parsed.ts).toISOString()
+        }
+      } catch {
+        this.log('warn', 'dsh-restart-systemd: leftover restart flag was malformed; suppressing for the residual window')
+      }
+      this.log('info', 'dsh-restart-systemd: consumed leftover restart flag from ' + stamp + ' (reason=' + reason + ')')
     }
-    // No flag → no fresh plugin-driven boot occurred. If a stray resume marker
-    // survives from a crashed/older run with no matching flag, drop it so it
-    // cannot resurrect phantom agents on the next agent/created.
-    await this.safeUnlink(this.paths.resume)
+
+    await this.safeUnlink(this.paths.flag)
+    await this.safeUnlink(this.paths.legacyResume)
   }
 
   /**
-   * Snapshot the currently *running* agents into the resume file (the trigger
-   * side of restart-recover). Only agents whose status is `running` are
-   * recorded; idle agents do not need to be resumed because nothing was
-   * interrupted.
-   * @param agents - all live agents from the registry.
+   * Schedule one restart. The method is async because preparation can fail:
+   * the single-flight lock is taken first, then the flag write is awaited, and
+   * only a successful write installs the delayed spawn and returns 202-shaped
+   * information. A failed write returns error without spawning.
    */
-  async writeResumeState(agents: readonly Agent[], reason: string): Promise<void> {
-    const running = agents.filter((agent) => agent.status === 'running')
-    const sessionIds = running.map((agent) => agent.id)
-    const flag: RestartFlag = { reason, ts: Date.now(), sessionIds }
-    try {
-      await writeFile(this.paths.flag, JSON.stringify(flag, null, 2), 'utf8')
-    } catch (error) {
-      this.ctx.logger.warn(`dsh-restart-systemd: failed to write flag file: ${String(error)}`)
-      // A flag file write failure must not block the restart — best effort.
-    }
-    try {
-      await writeFile(this.paths.resume, JSON.stringify({ ts: Date.now(), reason, sessionIds }, null, 2), 'utf8')
-    } catch (error) {
-      this.ctx.logger.warn(`dsh-restart-systemd: failed to write resume file: ${String(error)}`)
-    }
-    // Log the whole picture, not just the count: an empty snapshot used to be
-    // indistinguishable from "nothing was running", which hid a real bug (the
-    // registry was unreachable, so auto-resume never fired) for a long time.
-    const seen = agents.map((agent) => `${agent.id}:${agent.status}`).join(', ')
-    this.ctx.logger.info(
-      `dsh-restart-systemd: recorded ${sessionIds.length} running agent(s) for resume`
-      + ` [live=${agents.length}${seen === '' ? '' : ` (${seen})`}]`
-      + `${sessionIds.length === 0 ? '' : `: ${sessionIds.join(', ')}`}`,
-    )
-  }
-
-  /**
-   * Schedule a restart. Single-flight: a second call while one is in flight →
-   * `already-scheduled` (HTTP 409). Returns 202-shaped info on success. The
-   * actual spawn is deferred DELAY_MS so the HTTP response and any agent
-   * callback flush lands before the process dies.
-   * @param reason - human reason for the restart (audit log + flag).
-   * @param agentRunner - how to enumerate live running agents.
-   */
-  schedule(reason: string, agentRunner: () => readonly Agent[]): ScheduleResult {
+  async schedule(reason: string): Promise<ScheduleResult> {
     if (!platformSupported()) return { kind: 'unsupported' }
-    if (this.timer !== undefined) return { kind: 'already-scheduled' }
-    if (Date.now() < this.suppressedUntil) return { kind: 'suppressed' }
+    if (this.disposed) return { kind: 'error', message: 'restart scheduler is disposed' }
+    if (this.inFlight || this.timer !== undefined) return { kind: 'already-scheduled' }
 
-    void this.writeResumeState(agentRunner(), reason)
+    this.inFlight = true
+    try {
+      await this.initialize()
+      if (this.disposed) {
+        this.inFlight = false
+        return { kind: 'error', message: 'restart scheduler was disposed before scheduling' }
+      }
+      if (Date.now() < this.suppressedUntil) {
+        this.inFlight = false
+        return { kind: 'suppressed' }
+      }
 
-    // Fire the spawn after the browser has plenty of time to consume the 202.
-    this.timer = setTimeout(() => {
-      this.timer = undefined
-      this.spawn(process.platform)
-    }, DELAY_MS)
+      const flagTs = Date.now()
+      const flag: RestartFlag = { ts: flagTs, reason }
+      try {
+        await writeFile(this.paths.flag, JSON.stringify(flag, null, 2), 'utf8')
+      } catch (error) {
+        this.inFlight = false
+        return { kind: 'error', message: 'failed to write restart flag: ' + String(error) }
+      }
 
-    return { kind: 'scheduled', delayMs: DELAY_MS }
+      if (this.disposed) {
+        await this.clearOwnFlag(flagTs)
+        this.inFlight = false
+        return { kind: 'error', message: 'restart scheduler was disposed during flag write' }
+      }
+
+      this.pendingFlagTs = flagTs
+      try {
+        this.timer = setTimeout(() => {
+          this.timer = undefined
+          const pending = this.pendingFlagTs
+          this.pendingFlagTs = undefined
+          if (pending === undefined) {
+            this.inFlight = false
+            return
+          }
+          if (this.disposed) {
+            this.inFlight = false
+            void this.clearOwnFlag(pending).catch((error) => {
+              this.log('warn', 'dsh-restart-systemd: could not clear restart flag after dispose: ' + String(error))
+            })
+            return
+          }
+          void this.spawn(pending).catch((error) => {
+            this.log('error', 'dsh-restart-systemd: restart attempt failed unexpectedly: ' + String(error))
+            this.inFlight = false
+          })
+        }, DELAY_MS)
+      } catch (error) {
+        this.pendingFlagTs = undefined
+        await this.clearOwnFlag(flagTs)
+        this.inFlight = false
+        return { kind: 'error', message: 'failed to schedule restart: ' + String(error) }
+      }
+
+      return { kind: 'scheduled', delayMs: DELAY_MS }
+    } catch (error) {
+      this.inFlight = false
+      return { kind: 'error', message: 'restart scheduling failed: ' + String(error) }
+    }
   }
 
-  /** Actually invoke the restart command (whitelisted argv, no shell). */
-  private spawn(_platform: NodeJS.Platform): void {
-    const argv = restartArgv()
-    const unit = SYSTEMD_UNIT
-    this.ctx.logger.info(`dsh-restart-systemd: spawning restart for ${unit}: ${argv.join(' ')}`)
+  /** Invoke the fixed systemctl argv; failures are logged, never rethrown. */
+  private async spawn(flagTs: number): Promise<void> {
     try {
-      // Whitelisted argv array — never shell-interpreted.
+      const argv = restartArgv()
+      this.log('info', 'dsh-restart-systemd: spawning restart for ' + SYSTEMD_UNIT + ': ' + argv.join(' '))
       const handle = this.ctx.subprocess.spawn({
         argv,
         cwd: process.cwd(),
         stdio: { stdin: 'ignore', stdout: 'inherit', stderr: 'inherit' },
         graceMs: 10_000,
       })
-      void handle.done
-        .then((outcome) => {
-          this.ctx.logger.info(`dsh-restart-systemd: restart process exited code=${outcome.exitCode} signal=${outcome.signal ?? 'none'}`)
-        })
-        .catch((error) => {
-          this.ctx.logger.warn(`dsh-restart-systemd: restart process failed: ${String(error)}`)
-        })
+      await handle.done.then(
+        async (outcome) => {
+          const signal = outcome.signal ?? 'none'
+          if (outcome.exitCode === 0) {
+            this.log('info', 'dsh-restart-systemd: restart process exited code=0 signal=' + signal)
+          } else {
+            this.log('warn', 'dsh-restart-systemd: restart process exited code=' + String(outcome.exitCode) + ' signal=' + signal)
+            await this.clearOwnFlag(flagTs)
+          }
+        },
+        async (error) => {
+          this.log('warn', 'dsh-restart-systemd: restart process failed: ' + String(error))
+          await this.clearOwnFlag(flagTs)
+        },
+      )
     } catch (error) {
-      this.ctx.logger.error(`dsh-restart-systemd: could not spawn restart: ${String(error)}`)
+      this.log('error', 'dsh-restart-systemd: could not spawn restart: ' + String(error))
+      await this.clearOwnFlag(flagTs)
+    } finally {
+      this.inFlight = false
+    }
+  }
+
+  /** Remove the flag only when it is still the one written for this attempt. */
+  private async clearOwnFlag(flagTs: number): Promise<void> {
+    try {
+      const raw = await readFile(this.paths.flag, 'utf8')
+      const parsed = JSON.parse(raw) as Partial<RestartFlag>
+      if (parsed !== null && typeof parsed === 'object' && parsed.ts === flagTs) await this.safeUnlink(this.paths.flag)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.log('warn', 'dsh-restart-systemd: could not clear restart flag: ' + String(error))
+      }
     }
   }
 
@@ -241,16 +244,36 @@ export class RestartScheduler {
   private async safeUnlink(path: string): Promise<void> {
     try {
       await unlink(path)
-    } catch {
-      // absent is fine
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this.log('warn', 'dsh-restart-systemd: could not remove ' + path + ': ' + String(error))
+      }
     }
   }
 
-  /** Used by shutdown/unload to clear a pending timer. */
+  /** Clear a pending timer; an accepted but not-yet-spawned flag is removed. */
+  private log(level: 'info' | 'warn' | 'error', message: string): void {
+    try {
+      this.ctx.logger[level](message)
+    } catch {
+      // Logging must never break scheduling or escape a timer.
+    }
+  }
+
+  /** Permanently close this scheduler; an accepted timer is cleared and its flag is removed. */
   dispose(): void {
+    this.disposed = true
     if (this.timer !== undefined) {
       clearTimeout(this.timer)
       this.timer = undefined
+      const pending = this.pendingFlagTs
+      this.pendingFlagTs = undefined
+      if (pending !== undefined) {
+        void this.clearOwnFlag(pending).catch((error) => {
+          this.log('warn', 'dsh-restart-systemd: could not clear restart flag after dispose: ' + String(error))
+        })
+      }
     }
+    this.inFlight = false
   }
 }
