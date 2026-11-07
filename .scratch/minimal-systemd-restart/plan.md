@@ -148,7 +148,7 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 - 提交前工作树：41 个受跟踪文件（+1941/−3088），`git diff --check` exit 0；未跟踪 `.scratch/`、`scripts/ui-fixture.mjs`、`scripts/ui-fixture-entry.tsx`、`scripts/verify-ui-browser.mjs`；本清单已验收，已获准本地提交，实际提交以 git 记录为准，未安装、未部署、未推送。
 **交付状态（2026-11-07 更新）**：代码、测试、本地提交、推送与 GitHub Release v0.3.0 均已完成；**安装与重启未完成**。本会话文件沙箱把整个 `~/.dsh` 挂为只读（`touch ~/.dsh/...` → `EROFS`，`dsh --profile web --dump-config` 也因写 `cordis.yml` 失败），扩大权限的申请在本会话没有应答方，因此没有手改 profile、没有重启。
 
-证据：origin/main = `0c7c6a2b3ae79fb1eadb2c1bd02f57d8a9299aa4`（`e439d00` 之后只有文档/`.gitignore` 两个提交，`git diff --stat e439d00..HEAD -- lib src scripts package.json package-lock.json cordis.patch.yml` 为空）；tag `v0.3.0` 指向 `e439d00`；Release 资产 `dsh-restart-systemd-0.3.0.tgz` sha256 `3d04119d945fb0b85186f6c901653664c28f5f2b2d5c1d26c6f9f170d28b05b2` 与本地 `.scratch/release/` 产物一致；`npm test` exit 0（client 47/47、host 66/66），`npm run typecheck` exit 0，`git diff --check` exit 0。
+证据：`git diff --stat e439d00..origin/main -- lib src scripts package.json package-lock.json cordis.patch.yml` 为空（`e439d00` 之后只有文档与 `.gitignore` 提交，随时可复算，不钉具体的 origin/main 值）；tag `v0.3.0` 指向 `e439d00`；Release 资产 `dsh-restart-systemd-0.3.0.tgz` sha256 `3d04119d945fb0b85186f6c901653664c28f5f2b2d5c1d26c6f9f170d28b05b2` 与本地 `.scratch/release/` 产物一致；`npm test` exit 0（client 47/47、host 66/66），`npm run typecheck` exit 0、`git diff --check` exit 0。
 
 当前 profile 仍运行旧代码：`~/.dsh/profiles/web/pnpm-lock.yaml` 把该包 pin 在 `dfa78ed…`，安装副本 `lib/index.js` 的 sha256 与 `260bd73^` 相同，且 `lib/host/recover.js` 仍在——所以此刻重启只会重启旧插件。
 
