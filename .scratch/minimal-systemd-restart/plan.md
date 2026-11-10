@@ -1,6 +1,6 @@
 # Minimal systemd restart — 本地实施计划
 
-状态：**v0.3.0 已交付并上线**；v0.4.0（去掉重启后的等待界面）代码、测试、浏览器验证均已完成，**尚未提交、宿主尚未重启**，详见文末「交付状态」。基线 commit：`dfa78ed12846ba12f697ec0a1c1e3d5ce9a7f5e9`。
+状态：**v0.3.0 已交付并上线**；v0.4.0（去掉重启后的等待界面）代码已本地提交（`6b688f4` 代码、`3c4fdc1` 文档，未推送），**宿主尚未重启**，详见文末「交付状态」。基线 commit：`dfa78ed12846ba12f697ec0a1c1e3d5ce9a7f5e9`。
 本文件是本地实施计划/任务草案，不是 tracker ticket；不造 `ready-for-agent` 等状态。项目 tracker 配置未完成，后续需运行 `/setup-matt-pocock-skills`。本迭代不另建 ADR 或术语表。
 
 ## 目标
@@ -164,4 +164,4 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 
 证据：`npm test` exit 0（`test:client` 52/52、`test:host` 66/66）、`npm run typecheck` exit 0；构建后的 `lib/client/index.js` 对「重启请求已接受」「约 3 秒」「正在提交重启请求」零命中，仅保留 1 处 `aria-modal`（确认框）与气泡的 `role="alert"`。真机浏览器在隔离 TaskSpace `dsh-restart-norewait-20261110`（spaceId 380）跑 **53/53，finished=true，exit 0**，关键判据是 `202` 之后 `[role="dialog"]` 与 `[role="alert"]` 均为 0、按钮恢复可点，隔 1.6s 复查仍无任何界面。该 53/53 只对 [scripts/verify-ui-browser.mjs](../../scripts/verify-ui-browser.mjs) 当前清单成立。
 
-**未做**：真实宿主上的「重启」按钮一次都没点过（证据来自夹具与 subprocess 替身）；仓库改动未提交；运行中的 dsh-web 仍是 v0.3.0 的 bundle，需 `systemctl --user restart dsh-web` 才会换成新版。
+**未做**：真实宿主上的「重启」按钮一次都没点过（证据来自夹具与 subprocess 替身）；改动只到本地提交（`6b688f4`、`3c4fdc1`），未推送、未发布 Release；运行中的 dsh-web 仍是 v0.3.0 的 bundle，需 `systemctl --user restart dsh-web` 并刷新页面才会换成新版。
