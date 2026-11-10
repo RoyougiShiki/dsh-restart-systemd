@@ -1,6 +1,6 @@
 # Minimal systemd restart — 本地实施计划
 
-状态：**已交付并上线**（详见文末「交付状态」）。F1/F2 修复完成，host 66/66、client 47/47、build/typecheck 通过；已本地提交、推送、发布 v0.3.0、安装进 web profile 并重启宿主。基线 commit：`dfa78ed12846ba12f697ec0a1c1e3d5ce9a7f5e9`。
+状态：**v0.3.0 已交付并上线**；v0.4.0（去掉重启后的等待界面）代码、测试、浏览器验证均已完成，**尚未提交、宿主尚未重启**，详见文末「交付状态」。基线 commit：`dfa78ed12846ba12f697ec0a1c1e3d5ce9a7f5e9`。
 本文件是本地实施计划/任务草案，不是 tracker ticket；不造 `ready-for-agent` 等状态。项目 tracker 配置未完成，后续需运行 `/setup-matt-pocock-skills`。本迭代不另建 ADR 或术语表。
 
 ## 目标
@@ -23,9 +23,9 @@
 
 ## 客户端
 
-- phase 只需 `idle | confirm | requesting | accepted | error` 一类状态。
+- phase 只需 `idle | confirming | requesting | error` 一类状态（v0.4.0 去掉 `accepted`，见文末「交付状态」）。
 - 请求期间禁止重复确认。
-- 收到 202 显示「重启请求已接受，后续连接状态由 DSH 显示」，不可称为恢复成功。
+- 收到 202 **不画任何界面**：断开与重连由 DSH 自身的连接指示器叙述，本插件不重复播报，也不可称为恢复成功。当前行为以 [README.md](../../README.md) 为准。
 - 409 显示已有请求在处理；429/403/501/500 等显示对应错误。
 - fetch 断线或请求超时显示「无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试」；不是 scheduled，也不断言服务未重启。
 - 可给 HTTP 请求本身设置 10000ms `AbortController` 超时；这不是等待恢复。
@@ -85,7 +85,7 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 
 ## 实施结果（2026-11-06，已按主代理要求完成）
 
-- 源码：host 只保留 `webServer`/`subprocess`、exact `POST /api/restart-dsh`、固定 `['systemctl','--user','restart','dsh-web']`、单飞、flag、15000ms 抑制；client 只保留 idle/confirming/requesting/accepted/error，无 connection/自动刷新/自动续接。删除 `src/host/recover.ts`、`scripts/verify-agents-inject.mjs`、`scripts/verify-full-cycle.mjs`；主机实现见 [src/host/restart.ts](../../src/host/restart.ts)。
+- 源码：host 只保留 `webServer`/`subprocess`、exact `POST /api/restart-dsh`、固定 `['systemctl','--user','restart','dsh-web']`、单飞、flag、15000ms 抑制；client 只保留 idle/confirming/requesting/error，无 connection/自动刷新/自动续接。删除 `src/host/recover.ts`、`scripts/verify-agents-inject.mjs`、`scripts/verify-full-cycle.mjs`；主机实现见 [src/host/restart.ts](../../src/host/restart.ts)。
 - 依赖/发布面：[package.json](../../package.json) 去掉 agents/commands/llm/session/system-prompt/client-connection/client-store；`dsh.client.inject` 只留 locale/ui-renderer/ui-sidebar；[package-lock.json](../../package-lock.json) 用 `npm install --package-lock-only --ignore-scripts --offline --cache .scratch/npm-cache` 更新（exit 0，无网络）；版本保持 0.3.0。
 - 构建：`npm run build` exit 0（本地 tsc + [scripts/build-client.mjs](../../scripts/build-client.mjs)）；`npm run typecheck` exit 0；受跟踪 `lib` 已重建，孤儿 `lib/host/recover.*` 已核对并删除，build 后无旧代码。
 - 首轮 TDD red（wiring/import，不是逐行为 red）：`node [scripts/verify-host.mjs](../../scripts/verify-host.mjs)` exit 1（inject 仍是 webServer,subprocess,commands,agents；随后 `TypeError: Cannot read properties of undefined (reading 'register') at lib/index.js:133`）；`node [scripts/verify-client.mjs](../../scripts/verify-client.mjs)` exit 1（`TypeError: ctx.get is not a function at lib/client/index.js:370`）。
@@ -112,9 +112,9 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 
 - [x] plan 已写入 [plan.md](./plan.md)
 - [x] 确认提示中英文均为「重启将中断进行中的任务，不会自动续接。建议任务完成后操作。」
-- [x] 客户端 phase 精简为 idle/confirm/requesting/accepted/error
+- [x] 客户端 phase 精简为 idle/confirming/requesting/error（v0.4.0 去掉 `accepted`）
 - [x] 请求期间禁重复确认；终态可关闭、释放锁、可再打开
-- [x] 202 文案为「重启请求已接受，后续连接状态由 DSH 显示」
+- [x] 202 后不画任何等待/已接受界面（v0.4.0 取代原先的「重启请求已接受」文案）
 - [x] 409/429/403/501/500 各有对应错误文案
 - [x] fetch 断线/10s 超时显示「无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试」
 - [x] 删除 connection 监听、恢复超时、自动 reload、恢复轮询
@@ -159,3 +159,9 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 同类验证：`pnpm remove dsh-restart-systemd` 不加 flag 同样 exit 1（这次撞的是 `@deepseek-ai/dsh-llm`），加 flag exit 0 并从 lock 里摘干净（`grep -c` 6→0）；README 的回滚命令也补了该 flag。该 flag 只关「pnpm 替 peer 自动补装」，profile 里插件声明的真实依赖不受影响。
 
 发布面同步：v0.3.0 的 GitHub Release 说明已就地改为带该 flag 的安装命令（同一 tag，未新增版本）；工作区 [AGENTS.md](../../../AGENTS.md) 的安装铁律也补了同一参数，避免下一个插件重复踩。
+
+**v0.4.0 改动（2026-11-10，去等待界面）**：v0.3.0 留下的两处等待界面 —— `requesting` 全屏遮罩与 `accepted` 卡片 —— 已删除。依据是 DSH 核心自带连接指示器（侧边栏 footer 的「重新连接中 / 连接成功」）已经在叙述同一件事，插件重复播报且卡片留在屏幕上需要手动关闭。改动后：按下「重启」确认框立即关闭，忙态只留在 `RestartButton` 的触发器上（禁用 + 转圈）；`202` 直接回到 `idle`，不画任何界面；`409 / 429 / 403 / 501 / 500` 与断线、10s 超时改为触发器旁的 `role="alert"` 轻量气泡（宽 320、不遮罩页面），点 × 释放忙锁。Host 半边、HTTP 契约、`systemctl` argv、3000ms 延迟、单飞与 15000ms 抑制均未改。
+
+证据：`npm test` exit 0（`test:client` 52/52、`test:host` 66/66）、`npm run typecheck` exit 0；构建后的 `lib/client/index.js` 对「重启请求已接受」「约 3 秒」「正在提交重启请求」零命中，仅保留 1 处 `aria-modal`（确认框）与气泡的 `role="alert"`。真机浏览器在隔离 TaskSpace `dsh-restart-norewait-20261110`（spaceId 380）跑 **53/53，finished=true，exit 0**，关键判据是 `202` 之后 `[role="dialog"]` 与 `[role="alert"]` 均为 0、按钮恢复可点，隔 1.6s 复查仍无任何界面。该 53/53 只对 [scripts/verify-ui-browser.mjs](../../scripts/verify-ui-browser.mjs) 当前清单成立。
+
+**未做**：真实宿主上的「重启」按钮一次都没点过（证据来自夹具与 subprocess 替身）；仓库改动未提交；运行中的 dsh-web 仍是 v0.3.0 的 bundle，需 `systemctl --user restart dsh-web` 才会换成新版。

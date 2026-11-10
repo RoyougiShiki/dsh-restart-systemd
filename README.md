@@ -6,9 +6,10 @@
 > asks for confirmation, then schedules `systemctl --user restart dsh-web` about 3
 > seconds later, so the browser receives its **202** first. Duplicate requests are
 > refused (**409**), non-loopback callers are refused (**403**), and a one-shot flag
-> file plus a 15-second suppression window prevents restart loops. The button never
-> tries to reconnect, resume interrupted turns, or reload the page: after **202**, the
-> normal DSH connection state is the source of truth. Platform: **Linux / WSL only**.
+> file plus a 15-second suppression window prevents restart loops. After **202** the
+> plugin paints **no waiting or "accepted" surface at all**: DSH's own connection
+> indicator owns the outage and the reconnect narration. The button never tries to
+> reconnect, resume interrupted turns, or reload the page. Platform: **Linux / WSL only**.
 
 **GitHub topics**: `dsh` · `dsh-plugin` · `restart` · `systemd` · `wsl`
 
@@ -21,7 +22,7 @@
 | 半边 | entry（exports） | 运行环境 | 职责 |
 |------|------------------|----------|------|
 | host | `"."` → [lib/index.js](./lib/index.js) | node（宿主导入） | 注册受 loopback 保护的 `POST /api/restart-dsh`；单飞；写 flag；3s 后 spawn 固定 systemctl argv |
-| client | `"./client"` → [lib/client/index.js](./lib/client/index.js) | 浏览器（WebUI） | 侧边栏 footer 重启按钮、确认框、请求状态与文案 |
+| client | `"./client"` → [lib/client/index.js](./lib/client/index.js) | 浏览器（WebUI） | 侧边栏 footer 重启按钮、确认框、错误气泡（**不画等待/恢复界面**） |
 
 ```
 src/
@@ -29,7 +30,7 @@ src/
   host/gate.ts             # loopback fence (Host / Origin / Sec-Fetch-Site)
   host/restart.ts          # flag, single-flight, 3s timer, fixed systemctl argv
   client/index.ts          # client apply(): locale + sidebar.footer.action
-  client/RestartButton.tsx # button + confirm dialog + result states
+  client/RestartButton.tsx # button + confirm dialog + error bubble
   client/api.ts            # POST helper with a 10s AbortController
 ```
 
@@ -39,11 +40,11 @@ src/
 
 1. 侧边栏 footer 出现重启图标（`wide` 与 `rail` 两种侧栏都可用）；点击打开确认框。
 2. 确认文案：**「重启将中断进行中的任务，不会自动续接。建议任务完成后操作。」**（英文对应项见 [src/client/index.ts](./src/client/index.ts)）。
-3. 确认后按钮进入 `requesting` 并禁用，弹窗不可关闭；请求只发一次。
-4. `202` → 显示 **「重启请求已接受，后续连接状态由 DSH 显示」**。不等待恢复、不轮询、不自动刷新页面、不自动续接会话。
-5. `409` → 已有请求在处理；`429` → 重启后的抑制窗口内；`403` → 非 loopback；`501` → 非 Linux；`500` → 调度准备或 flag 写入失败、调度器已 `dispose`（受控错误）。
-6. 网络断线或 10s 超时 → 显示 **「无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试。」**，不把结果谎报为成功或失败。
-7. `accepted` / `error` 是终态：可关闭弹窗、释放忙锁、再次打开；请求本身已经由服务端接管，客户端不会因 3s 内还没重启就重复发送。
+3. 点「重启」后确认框**立即关闭**，只有按钮自己转圈并禁用（防重复提交）；请求只发一次。
+4. `202` → **不再显示任何界面**，按钮回到常态。断开与重连由 DSH 自己的连接指示器（侧边栏 footer 的「重新连接中 / 连接成功」）叙述；本插件不画等待遮罩、不画「已接受」卡片、不轮询、不自动刷新页面、不自动续接会话。
+5. `409` → 已有请求在处理；`429` → 重启后的抑制窗口内；`403` → 非 loopback；`501` → 非 Linux；`500` → 调度准备或 flag 写入失败、调度器已 `dispose`（受控错误）。这些情况在按钮旁弹出一个轻量气泡（`role="alert"`，320px，不遮罩页面、不阻断操作），点 × 关闭。
+6. 网络断线或 10s 超时 → 同一个气泡显示 **「无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试。」**，不把结果谎报为成功或失败。
+7. 关闭气泡即释放忙锁，可再次打开确认框；请求本身已经由服务端接管，客户端不会因 3s 内还没重启就重复发送。
 
 ## Host 契约
 
@@ -97,7 +98,7 @@ npm run typecheck
 两套测试都**不启动真实 systemctl、不向 3080 或真实 profile 发请求**：
 - [scripts/verify-host.mjs](./scripts/verify-host.mjs) 用真实 loopback HTTP + `subprocess.spawn` 硬替身，`DSH_HOME` 全部指向临时目录；覆盖取消/单飞/延迟/flag 失败/平台拒绝/spawn 失败日志/dispose 与请求体或 flag 写入期间的清理/清理期间 409/清理后重试/unhandled=0。
 - [scripts/verify-client.mjs](./scripts/verify-client.mjs) 通过 loader 协议加载 [lib/client/index.js](./lib/client/index.js)，检查运行时 require 仅 `react`、`react-dom`、`react/jsx-runtime`，再做 SSR 渲染与中英字典覆盖；它是**接线/文案级**验证，不是浏览器点击验证。
-- 浏览器交互（确认、取消、双击、202/409/429/403/501/500、断线未知、10s 超时、关闭重开、wide/rail）通过 [scripts/ui-fixture.mjs](./scripts/ui-fixture.mjs) + [scripts/ui-fixture-entry.tsx](./scripts/ui-fixture-entry.tsx) 的临时静态 React 夹具，在隔离浏览器 TaskSpace 中运行 [scripts/verify-ui-browser.mjs](./scripts/verify-ui-browser.mjs) 验证；夹具只 mock `/api/restart-dsh`，不连接当前 GUI、不调用真实 systemctl。
+- 浏览器交互（确认、取消、双击、202 后**不出现任何界面**、409/429/403/501/500 气泡、断线未知、10s 超时、关闭重开、wide/rail）通过 [scripts/ui-fixture.mjs](./scripts/ui-fixture.mjs) + [scripts/ui-fixture-entry.tsx](./scripts/ui-fixture-entry.tsx) 的临时静态 React 夹具，在隔离浏览器 TaskSpace 中运行 [scripts/verify-ui-browser.mjs](./scripts/verify-ui-browser.mjs) 验证；夹具只 mock `/api/restart-dsh`，不连接当前 GUI、不调用真实 systemctl。
 - 夹具绑定 `0.0.0.0` 只是为了另一台主机（例如 Windows）上的 ego-browser 能访问 WSL 内的夹具；它不是 DSH 服务，也不是插件的监听面。浏览器脚本需要外部 ego-browser，不进入 `npm test`，也不硬编码浏览器路径。
 
 ### 浏览器验证（单独运行，不进入 npm test）
@@ -108,7 +109,7 @@ npm run fixture
 node scripts/verify-ui-browser.mjs --url <FIXTURE_URL> --task-space <隔离任务名>
 ```
 
-`--ego <command>` 或 `EGO_BROWSER` 可指定 ego-browser（默认 `ego-browser`）。脚本生成 Node 脚本源码并通过 stdin 交给 ego-browser，不写入仓库；它覆盖确认/取消、双击、202/409/429/403/501/500、断线未知、10s 超时、关闭重开和 wide/rail。脚本在 TaskSpace 持有段包 `try/finally`，成功或失败都会 `finish({ keep: [] })` 清理本次任务。本次已在隔离 TaskSpace 实际运行 32/32（`finished=true`）；fixture server 与 job 已终止，不打开当前 GUI。
+`--ego <command>` 或 `EGO_BROWSER` 可指定 ego-browser（默认 `ego-browser`）。脚本生成 Node 脚本源码并通过 stdin 交给 ego-browser，不写入仓库；它覆盖确认/取消、双击、202 后不出现界面、409/429/403/501/500 气泡、断线未知、10s 超时、关闭重开和 wide/rail。脚本在 TaskSpace 持有段包 `try/finally`，成功或失败都会 `finish({ keep: [] })` 清理本次任务。v0.4.0 已在隔离 TaskSpace 实际运行 **53/53**（`finished=true`）；fixture server 已终止，不打开当前 GUI。
 
 ## HTTP API
 
@@ -141,6 +142,7 @@ rm -f ~/.dsh/dsh-restart.flag ~/.dsh/dsh-restart-resume.json
 - **仅 Linux/WSL**：没有 Windows helper、没有平台分支；非 Linux 返回 501。
 - **服务单元固定**：argv 恒为 `systemctl --user restart dsh-web`；若以其它方式启动 DSH，spawn 会失败并记日志，不会产生重启。
 - **不自动续接、不自动刷新**：进行中的 agent 任务会被重启中断；页面是否恢复、何时恢复由 DSH 连接层决定，本插件不轮询、不刷新、不注入 `Continue.`。
+- **不显示等待/恢复界面**（v0.4.0 起）：202 之后插件什么都不画，"正在重连 / 重连完成"完全由 DSH 核心的 `ConnectionIndicator` 呈现；插件只在自己的请求失败或被拒绝时弹一个轻量气泡。
 - **已接受 ≠ 已重启**：202 只表示 flag 已写、timer 已排；3s 后 spawn 失败只体现在日志中，没有查询接口。客户端在网络未知时会明确提示这一点。
 - **单飞只在同一调度器实例**：flag + boot 抑制用于防跨重启循环；热重载会产生新实例，两个实例共享 `DSH_HOME` 时不保证 flag 读写的跨实例原子性，也不提供跨实例锁。`dispose` 清 flag 是 best-effort；进程退出未清时，下一次 boot consume 最多额外抑制 15s。
 - **UI 验证边界**：SSR/HTTP 替身不能替代真实浏览器；浏览器验证使用隔离夹具和 [scripts/verify-ui-browser.mjs](./scripts/verify-ui-browser.mjs)，不会打开当前 GUI。
