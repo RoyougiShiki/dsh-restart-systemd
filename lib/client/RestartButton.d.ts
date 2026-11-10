@@ -2,8 +2,10 @@
  * Sidebar-footer restart trigger for dsh-restart-systemd.
  *
  * Rendered into the official sidebar.footer.action seat. The component owns
- * only the confirmation dialog and the POST result display. It never waits for
- * recovery, never reloads the page, and never reads a connection service.
+ * only the confirmation dialog and the POST result bubble. It paints no
+ * wait/recovery surface: while the request is in flight the trigger alone
+ * carries the busy state, and after a 202 it goes back to idle because DSH's
+ * own ConnectionIndicator narrates the outage and the reconnect.
  * @module dsh-restart-systemd/client/RestartButton
  */
 import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots';
@@ -17,7 +19,7 @@ export declare function RestartGlyph({ size }: {
     size?: number;
 }): import("react").JSX.Element;
 /**
- * Render the restart trigger and its result dialog.
+ * Render the restart trigger, its confirmation dialog, and the error bubble.
  * @param props - footer seat props plus the locale seat.
  * @returns the entry element tree.
  */

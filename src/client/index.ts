@@ -1,8 +1,9 @@
 /**
  * dsh-restart-systemd - browser half. Registers the restart dictionaries and
  * mounts the sidebar-footer trigger into the official sidebar.footer.action
- * seat. The button only asks the host for a restart and reports the host's
- * answer; DSH own connection indicator owns outage/reconnect narration.
+ * seat. The button only asks the host for a restart and reports a refusal in a
+ * small bubble; DSH own connection indicator owns outage/reconnect narration,
+ * so this plugin paints no waiting or accepted surface.
  * @module dsh-restart-systemd/client
  */
 
@@ -31,9 +32,6 @@ export type RestartDshKey =
   | 'restart.cancel'
   | 'restart.proceed'
   | 'restart.requesting'
-  | 'restart.requestingHint'
-  | 'restart.accepted'
-  | 'restart.acceptedHint'
   | 'restart.conflict'
   | 'restart.suppressed'
   | 'restart.denied'
@@ -50,9 +48,6 @@ export const en: Record<RestartDshKey, string> = {
   'restart.cancel': 'Cancel',
   'restart.proceed': 'Restart',
   'restart.requesting': 'Submitting restart request...',
-  'restart.requestingHint': 'This only submits the request; it does not wait for recovery.',
-  'restart.accepted': 'Restart request accepted. Connection status is shown by DSH.',
-  'restart.acceptedHint': 'The service will restart in about 3 seconds.',
   'restart.conflict': 'A restart request is already in progress.',
   'restart.suppressed': 'The service just restarted; please wait a moment before trying again.',
   'restart.denied': 'Restart is only available from this machine (loopback).',
@@ -70,9 +65,6 @@ export const zh: Record<RestartDshKey, string> = {
   'restart.cancel': '取消',
   'restart.proceed': '重启',
   'restart.requesting': '正在提交重启请求…',
-  'restart.requestingHint': '这里只提交请求，不等待服务恢复。',
-  'restart.accepted': '重启请求已接受，后续连接状态由 DSH 显示',
-  'restart.acceptedHint': '服务将在约 3 秒后重启。',
   'restart.conflict': '已有重启请求在处理。',
   'restart.suppressed': '服务刚刚重启，请稍候再试。',
   'restart.denied': '重启仅限本机访问（loopback）。',

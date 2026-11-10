@@ -82,8 +82,21 @@ async function bodyText() {
   return await page.evaluate(() => document.body.innerText)
 }
 
-async function dialogText() {
-  return await page.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? null)
+async function dialogCount() {
+  return await page.evaluate(() => document.querySelectorAll('[role="dialog"]').length)
+}
+
+async function bubbleText() {
+  return await page.evaluate(() => document.querySelector('[role="alert"]')?.innerText ?? null)
+}
+
+async function bubbleBox() {
+  return await page.evaluate(() => {
+    const el = document.querySelector('[role="alert"]')
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    return { width: Math.round(rect.width), height: Math.round(rect.height), parent: el.parentElement?.tagName ?? null }
+  })
 }
 
 async function openConfirm() {
@@ -91,13 +104,33 @@ async function openConfirm() {
   await page.waitForSelector('[data-dsh-restart-action="cancel"]', { state: "visible", timeout: 5000 })
 }
 
-async function closeDialog() {
-  await page.click('[data-dsh-restart-action="close"], [data-dsh-restart-action="cancel"]')
+async function cancelConfirm() {
+  await page.click('[data-dsh-restart-action="cancel"]')
   await page.waitForSelector('[role="dialog"]', { state: "detached", timeout: 5000 })
 }
 
 async function confirmRestart() {
   await page.click('[data-dsh-restart-action="proceed"]')
+  await page.waitForSelector('[role="dialog"]', { state: "detached", timeout: 5000 })
+}
+
+async function dismissBubble() {
+  await page.click('[data-dsh-restart-action="dismiss"]')
+  await page.waitForSelector('[role="alert"]', { state: "detached", timeout: 5000 })
+}
+
+async function waitForRequests(total, timeout = 8000) {
+  const deadline = Date.now() + timeout
+  while (Date.now() < deadline) {
+    const snapshot = await state()
+    if (snapshot.count >= total) return snapshot
+    await page.waitForTimeout(100)
+  }
+  return await state()
+}
+
+async function triggerDisabled() {
+  return await page.evaluate(() => document.querySelector(".dsh-restart-trigger")?.disabled === true)
 }
 
 await page.goto(BASE + "/?wide=1&lang=zh", { timeout: 30000 })
@@ -108,22 +141,32 @@ check("wide trigger has the Chinese label", label === "重启 DeepSeek Harness",
 
 await setMode("202")
 await openConfirm()
-check("confirm dialog explains no auto-resume", (await bodyText()).includes("重启将中断进行中的任务，不会自动续接。建议任务完成后操作。"), await bodyText())
-await closeDialog()
+const confirmText = await page.evaluate(() => document.querySelector('[role="dialog"]')?.innerText ?? "")
+check("confirm dialog explains no auto-resume", confirmText.includes("重启将中断进行中的任务，不会自动续接。建议任务完成后操作。"), confirmText)
+await cancelConfirm()
 check("cancel sends zero requests", (await state()).count === 0, await state())
 
+// 202: the only surface is the confirm dialog; it closes and nothing replaces it.
 await setMode("202")
 await openConfirm()
 await confirmRestart()
-await page.waitForFunction(() => document.body.innerText.includes("重启请求已接受"), undefined, { timeout: 5000 })
-let current = await state()
+let current = await waitForRequests(1)
 check("one confirm sends exactly one request", current.count === 1, current)
 check("request reason is webui-button", current.lastReason === "webui-button", current)
-check("accepted copy is present", (await bodyText()).includes("重启请求已接受，后续连接状态由 DSH 显示"), await dialogText())
-await page.waitForTimeout(1200)
-check("202 does not wait for recovery or dismiss itself", (await bodyText()).includes("重启请求已接受"), await bodyText())
-await closeDialog()
-check("accepted terminal state can be closed", (await state()).count === 1, await state())
+check("202 paints no dialog", (await dialogCount()) === 0, await dialogCount())
+check("202 paints no bubble", (await bubbleText()) === null, await bubbleText())
+check("202 leaves the trigger idle", (await triggerDisabled()) === false, await triggerDisabled())
+await page.waitForTimeout(1600)
+check("no waiting surface appears after 202", (await dialogCount()) === 0 && (await bubbleText()) === null, {
+  dialogs: await dialogCount(),
+  bubble: await bubbleText(),
+})
+const afterAcceptedText = await bodyText()
+check("no accepted copy is ever painted", !afterAcceptedText.includes("重启请求已接受") && !afterAcceptedText.includes("约 3 秒") && !afterAcceptedText.includes("正在提交重启请求"), afterAcceptedText)
+await openConfirm()
+check("trigger reopens the confirm dialog after 202", (await dialogCount()) === 1, await dialogCount())
+await cancelConfirm()
+check("reopening after 202 sends no extra request", (await state()).count === 1, await state())
 
 await setMode("202")
 await openConfirm()
@@ -132,9 +175,13 @@ await page.evaluate(() => {
   proceed.click()
   proceed.click()
 })
-await page.waitForFunction(() => document.body.innerText.includes("重启请求已接受"), undefined, { timeout: 5000 })
-check("double activation sends only one request", (await state()).count === 1, await state())
-await closeDialog()
+current = await waitForRequests(1)
+await page.waitForTimeout(600)
+const afterDouble = await state()
+check("double activation sends only one request", afterDouble.count === 1, { current, afterDouble })
+check("double activation paints no dialog", (await dialogCount()) === 0, await dialogCount())
+check("double activation paints no bubble", (await bubbleText()) === null, await bubbleText())
+if (await bubbleText() !== null) await dismissBubble()
 
 const errorCases = [
   { mode: "409", expected: "已有重启请求在处理。" },
@@ -147,25 +194,29 @@ for (const item of errorCases) {
   await setMode(item.mode)
   await openConfirm()
   await confirmRestart()
-  await page.waitForSelector('[data-dsh-restart-action="close"]', { state: "visible", timeout: 5000 })
-  const text = await dialogText()
+  await page.waitForSelector('[role="alert"]', { state: "visible", timeout: 8000 })
+  const text = await bubbleText()
   check(item.mode + " shows its mapped copy", text.includes(item.expected), text)
+  check(item.mode + " reports through a bubble, not a modal", (await dialogCount()) === 0, await dialogCount())
+  const box = await bubbleBox()
+  check(item.mode + " bubble is small and anchored", box !== null && box.width <= 400 && box.height <= 200 && box.parent === "BODY", box)
   check(item.mode + " sends exactly one request", (await state()).count === 1, await state())
-  await closeDialog()
+  await dismissBubble()
+  check(item.mode + " dismiss releases the trigger", (await triggerDisabled()) === false, await triggerDisabled())
 }
 
 await setMode("close")
 await openConfirm()
 await confirmRestart()
-await page.waitForSelector('[data-dsh-restart-action="close"]', { state: "visible", timeout: 5000 })
-let text = await dialogText()
+await page.waitForSelector('[role="alert"]', { state: "visible", timeout: 8000 })
+let text = await bubbleText()
 check("dropped request reports unknown", text.includes("无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试。"), text)
 current = await state()
 check("dropped request still reached the HTTP fixture", current.count >= 1, current)
-await closeDialog()
+await dismissBubble()
 await openConfirm()
 check("unknown terminal state can be reopened", await page.evaluate(() => !!document.querySelector('[data-dsh-restart-action="cancel"]')), true)
-await closeDialog()
+await cancelConfirm()
 check("reopening after unknown sends no extra request", (await state()).count === current.count, await state())
 
 await setMode("hang")
@@ -174,19 +225,19 @@ await confirmRestart()
 await page.waitForTimeout(300)
 const during = await page.evaluate(() => ({
   disabled: document.querySelector(".dsh-restart-trigger")?.disabled,
-  proceed: !!document.querySelector('[data-dsh-restart-action="proceed"]'),
-  cancel: !!document.querySelector('[data-dsh-restart-action="cancel"]'),
+  dialogs: document.querySelectorAll('[role="dialog"]').length,
+  bubbles: document.querySelectorAll('[role="alert"]').length,
 }))
 check("requesting disables the trigger", during.disabled === true, during)
-check("requesting removes proceed/cancel actions", during.proceed === false && during.cancel === false, during)
+check("requesting paints no waiting dialog", during.dialogs === 0 && during.bubbles === 0, during)
 const hangStart = Date.now()
-await page.waitForSelector('[data-dsh-restart-action="close"]', { state: "visible", timeout: 15000 })
+await page.waitForSelector('[role="alert"]', { state: "visible", timeout: 15000 })
 const elapsed = Date.now() - hangStart
-text = await dialogText()
+text = await bubbleText()
 check("timeout reports unknown", text.includes("无法确认重启请求是否被接受"), text)
 check("timeout waited about 10s", elapsed >= 9500, elapsed)
 check("timeout did not duplicate the request", (await state()).count === 1, await state())
-await closeDialog()
+await dismissBubble()
 
 await page.goto(BASE + "/?wide=0&lang=zh", { timeout: 30000 })
 await page.waitForSelector(".dsh-restart-trigger", { state: "visible", timeout: 15000 })

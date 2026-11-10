@@ -2,8 +2,10 @@
  * Sidebar-footer restart trigger for dsh-restart-systemd.
  *
  * Rendered into the official sidebar.footer.action seat. The component owns
- * only the confirmation dialog and the POST result display. It never waits for
- * recovery, never reloads the page, and never reads a connection service.
+ * only the confirmation dialog and the POST result bubble. It paints no
+ * wait/recovery surface: while the request is in flight the trigger alone
+ * carries the busy state, and after a 202 it goes back to idle because DSH's
+ * own ConnectionIndicator narrates the outage and the reconnect.
  * @module dsh-restart-systemd/client/RestartButton
  */
 
@@ -19,11 +21,14 @@ export interface RestartButtonProps extends PropsLocale<'restart-dsh'> {
   wide: boolean
 }
 
+/**
+ * Nothing here narrates recovery. `accepted` is deliberately absent: a 202
+ * returns to `idle` so no card can outlive the page.
+ */
 type Phase =
   | { kind: 'idle' }
   | { kind: 'confirming' }
   | { kind: 'requesting' }
-  | { kind: 'accepted' }
   | { kind: 'error'; message: string }
 
 /** A restart glyph (refresh/arrow bicycle) matching the outline icon style. */
@@ -96,8 +101,41 @@ const buttonBase: CSSProperties = {
 }
 const cancelStyle: CSSProperties = { ...buttonBase, borderColor: 'var(--dsw-alias-border-l2)', color: 'var(--dsw-alias-label-secondary)', background: 'transparent' }
 const proceedStyle: CSSProperties = { ...buttonBase, background: 'var(--dsw-alias-label-primary)', color: 'var(--dsw-alias-bg-layer-3)' }
-const errorStyle: CSSProperties = { margin: '4px 0 0', color: 'var(--dsw-alias-label-error)' }
-const hintStyle: CSSProperties = { margin: '8px 0 0', fontSize: 12, color: 'var(--dsw-alias-label-tertiary)' }
+
+/** Error bubble: a small anchored note near the trigger, never a mask. */
+const bubbleStyle = (wide: boolean): CSSProperties => ({
+  position: 'fixed',
+  left: wide ? 12 : 72,
+  bottom: 72,
+  zIndex: 50,
+  boxSizing: 'border-box',
+  display: 'flex',
+  alignItems: 'flex-start',
+  gap: 8,
+  width: 320,
+  maxWidth: 'calc(100vw - 24px)',
+  padding: '10px 12px',
+  border: '1px solid var(--dsw-alias-border-l2)',
+  borderRadius: 12,
+  background: 'var(--dsw-alias-bg-layer-2)',
+  boxShadow: 'var(--dsw-shadow-lv3)',
+  fontSize: 13,
+  lineHeight: 1.5,
+})
+const bubbleTextStyle: CSSProperties = { flex: '1 1 auto', color: 'var(--dsw-alias-label-error)', whiteSpace: 'pre-line' }
+const bubbleCloseStyle: CSSProperties = {
+  flex: 'none',
+  appearance: 'none',
+  background: 'transparent',
+  border: 'none',
+  padding: 0,
+  width: 18,
+  height: 18,
+  lineHeight: '18px',
+  fontSize: 15,
+  cursor: 'pointer',
+  color: 'var(--dsw-alias-label-tertiary)',
+}
 
 function SpinnerGlyph({ size = 16 }: { size?: number }) {
   return (
@@ -109,15 +147,18 @@ function SpinnerGlyph({ size = 16 }: { size?: number }) {
 }
 
 /**
- * Render the restart trigger and its result dialog.
+ * Render the restart trigger, its confirmation dialog, and the error bubble.
  * @param props - footer seat props plus the locale seat.
  * @returns the entry element tree.
  */
 export function RestartButton({ wide, t }: RestartButtonProps) {
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' })
-  const [open, setOpen] = useState(false)
   const busyRef = useRef(false)
-  const actionsRef = useRef<{ close: () => void; confirm: () => void }>({ close: () => {}, confirm: () => {} })
+  const actionsRef = useRef<{ cancel: () => void; confirm: () => void; dismiss: () => void }>({
+    cancel: () => {},
+    confirm: () => {},
+    dismiss: () => {},
+  })
 
   // Hover/active/focus styles live in one injected stylesheet because inline
   // styles cannot express :hover. The previous generation's rules are removed
@@ -125,7 +166,7 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
   useEffect(() => {
     document.querySelectorAll('style[id^="dsh-restart-css"]').forEach((stale) => stale.remove())
     const style = document.createElement('style')
-    style.id = 'dsh-restart-css-v5'
+    style.id = 'dsh-restart-css-v6'
     style.textContent = [
       '.dsh-restart-trigger{background:transparent;color:var(--dsw-alias-label-secondary);transition:background-color 120ms ease,color 120ms ease,box-shadow 120ms ease}',
       '.dsh-restart-trigger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}',
@@ -146,10 +187,12 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     return () => document.documentElement.classList.remove('dsh-restart-rail')
   }, [wide])
 
-  const close = useCallback(() => {
-    busyRef.current = false
-    setOpen(false)
+  const cancel = useCallback(() => {
     setPhase({ kind: 'idle' })
+  }, [])
+
+  const dismiss = useCallback(() => {
+    setPhase((current) => (current.kind === 'error' ? { kind: 'idle' } : current))
   }, [])
 
   const run = useCallback(async () => {
@@ -165,9 +208,10 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     }
     busyRef.current = false
 
+    // A 202 needs no surface of its own: the trigger returns to idle and DSH
+    // reports the disconnect and the reconnect by itself.
     if (result.status === 'accepted') {
-      setPhase({ kind: 'accepted' })
-      setOpen(true)
+      setPhase({ kind: 'idle' })
       return
     }
 
@@ -180,17 +224,18 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     else message = t('restart.failed') + ' (' + result.message + ')'
 
     setPhase({ kind: 'error', message })
-    setOpen(true)
   }, [t])
 
   const confirm = useCallback(() => {
+    // Close first so the user never sees a waiting dialog while the POST flies.
+    setPhase({ kind: 'requesting' })
     void run()
   }, [run])
 
   // Keep the latest callbacks reachable from the document-level delegation
   // listener (some portal/rail compositions do not deliver synthetic clicks).
   useEffect(() => {
-    actionsRef.current = { close, confirm }
+    actionsRef.current = { cancel, confirm, dismiss }
   })
 
   useEffect(() => {
@@ -201,8 +246,9 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       event.preventDefault()
       event.stopPropagation()
       const action = element.getAttribute('data-dsh-restart-action')
-      if (action === 'cancel' || action === 'close') actionsRef.current.close()
+      if (action === 'cancel') actionsRef.current.cancel()
       else if (action === 'proceed') actionsRef.current.confirm()
+      else if (action === 'dismiss') actionsRef.current.dismiss()
     }
     document.addEventListener('click', handler)
     return () => document.removeEventListener('click', handler)
@@ -222,54 +268,39 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
       title={requesting ? t('restart.requesting') : label}
       onClick={() => {
         setPhase({ kind: 'confirming' })
-        setOpen(true)
       }}
     >
       {requesting ? <SpinnerGlyph size={wide ? 16 : 18} /> : <RestartGlyph size={wide ? 16 : 18} />}
     </button>
   )
 
-  const dialog = open && createPortal((
+  const dialog = phase.kind === 'confirming' && createPortal((
     <div style={overlayStyle} role="presentation">
-      <div style={maskStyle} aria-hidden="true" onClick={requesting ? undefined : close} />
+      <div style={maskStyle} aria-hidden="true" onClick={cancel} />
       <div style={dialogStyle} role="dialog" aria-modal="true" aria-label={label}>
-        {phase.kind === 'confirming' && (
-          <>
-            <p style={titleStyle}>{t('restart.confirm.title')}</p>
-            <p style={bodyStyle}>{t('restart.confirm.body')}</p>
-            <div style={actionsStyle}>
-              <button type="button" data-dsh-restart-action="cancel" style={cancelStyle} onClick={close}>{t('restart.cancel')}</button>
-              <button type="button" data-dsh-restart-action="proceed" style={proceedStyle} onClick={confirm}>{t('restart.proceed')}</button>
-            </div>
-          </>
-        )}
-        {phase.kind === 'requesting' && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }} role="status">
-            <SpinnerGlyph size={18} />
-            <div>
-              <p style={titleStyle}>{t('restart.requesting')}</p>
-              <p style={hintStyle}>{t('restart.requestingHint')}</p>
-            </div>
-          </div>
-        )}
-        {phase.kind === 'accepted' && (
-          <>
-            <p style={titleStyle}>{t('restart.accepted')}</p>
-            <p style={hintStyle}>{t('restart.acceptedHint')}</p>
-            <div style={actionsStyle}>
-              <button type="button" data-dsh-restart-action="close" style={cancelStyle} onClick={close}>{t('restart.close')}</button>
-            </div>
-          </>
-        )}
-        {phase.kind === 'error' && (
-          <>
-            <p style={errorStyle}>{phase.message}</p>
-            <div style={actionsStyle}>
-              <button type="button" data-dsh-restart-action="close" style={cancelStyle} onClick={close}>{t('restart.close')}</button>
-            </div>
-          </>
-        )}
+        <p style={titleStyle}>{t('restart.confirm.title')}</p>
+        <p style={bodyStyle}>{t('restart.confirm.body')}</p>
+        <div style={actionsStyle}>
+          <button type="button" data-dsh-restart-action="cancel" style={cancelStyle} onClick={cancel}>{t('restart.cancel')}</button>
+          <button type="button" data-dsh-restart-action="proceed" style={proceedStyle} onClick={confirm}>{t('restart.proceed')}</button>
+        </div>
       </div>
+    </div>
+  ), document.body)
+
+  const bubble = phase.kind === 'error' && createPortal((
+    <div style={bubbleStyle(wide)} role="alert">
+      <span style={bubbleTextStyle}>{phase.message}</span>
+      <button
+        type="button"
+        data-dsh-restart-action="dismiss"
+        style={bubbleCloseStyle}
+        aria-label={t('restart.close')}
+        title={t('restart.close')}
+        onClick={dismiss}
+      >
+        ×
+      </button>
     </div>
   ), document.body)
 
@@ -277,6 +308,7 @@ export function RestartButton({ wide, t }: RestartButtonProps) {
     <>
       {trigger}
       {dialog}
+      {bubble}
     </>
   )
 }

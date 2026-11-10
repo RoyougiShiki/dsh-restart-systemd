@@ -68,7 +68,7 @@ check(typeof entry?.component === 'function', 'entry component is a function')
 check(entry?.options?.inject === undefined, 'entry no longer injects a connection hook')
 check(captured.locales[0]?.ns === 'restart-dsh', 'registers the restart-dsh dictionary')
 
-console.log('\n[2/4] no connection-driven reload or recovery surface')
+console.log('\n[2/4] no connection-driven reload, recovery, or waiting surface')
 
 const builtClient = read('../lib/client/index.js')
 check(!builtClient.includes('useConnectionState'), 'built client has no useConnectionState hook')
@@ -78,6 +78,16 @@ const indexSource = read('../src/client/index.ts')
 check(!buttonSource.includes('location.reload'), 'button source never reloads the page')
 check(!buttonSource.includes('PENDING_TIMEOUT_MS'), 'button source has no recovery timeout')
 check(!indexSource.includes('dsh-client-connection'), 'client index does not import the connection package')
+// v0.4.0: DSH's own ConnectionIndicator narrates outage/reconnect, so this
+// plugin must paint no wait or accepted surface of its own.
+check(!/kind: 'accepted'/.test(buttonSource), 'button source has no accepted phase')
+check(!builtClient.includes('重试恢复') && !builtClient.includes('等待'), 'built client carries no waiting copy')
+check(!buttonSource.includes('requestingHint') && !buttonSource.includes('acceptedHint'), 'button source references no wait/accept copy')
+check(!indexSource.includes('requestingHint') && !indexSource.includes('acceptedHint'), 'dictionaries define no wait/accept copy')
+check((buttonSource.match(/role="alert"/g) || []).length === 1, 'errors render through exactly one bubble role=alert')
+check(buttonSource.includes("const dialog = phase.kind === 'confirming' && createPortal"), 'the only portal dialog is gated on the confirming phase')
+check(buttonSource.includes("const bubble = phase.kind === 'error' && createPortal"), 'the error bubble is gated on the error phase')
+check(!buttonSource.includes('setOpen'), 'the component no longer holds an open/closed modal flag')
 
 console.log('\n[3/4] render + copy coverage')
 
@@ -101,7 +111,7 @@ const rail = renderToStaticMarkup(createElement(RestartButton, { wide: false, t 
 check(rail.includes('dsh-restart-trigger'), 'rail mode renders the trigger')
 
 check(zh['restart.confirm.body'] === '重启将中断进行中的任务，不会自动续接。建议任务完成后操作。', 'Chinese confirm body matches the approved copy')
-check(zh['restart.accepted'] === '重启请求已接受，后续连接状态由 DSH 显示', 'Chinese accepted copy matches the approved copy')
+check(!('restart.accepted' in zh) && !('restart.acceptedHint' in zh), 'no accepted copy remains in the dictionaries')
 check(zh['restart.unknown'] === '无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试。', 'Chinese unknown copy matches the approved copy')
 check(zh['restart.conflict'] === '已有重启请求在处理。', 'Chinese conflict copy exists')
 
