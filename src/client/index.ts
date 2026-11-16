@@ -1,9 +1,12 @@
 /**
  * dsh-restart-systemd - browser half. Registers the restart dictionaries and
  * mounts the sidebar-footer trigger into the official sidebar.footer.action
- * seat. The button only asks the host for a restart and reports a refusal in a
- * small bubble; DSH own connection indicator owns outage/reconnect narration,
- * so this plugin paints no waiting or accepted surface.
+ * seat.
+ *
+ * Two user intents share one trigger: restart now (interrupting whatever runs)
+ * and restart once every session is idle. The second one is the point of the
+ * plugin: the user can ask for the restart the moment the plugin changed and
+ * walk away, instead of having to remember to come back after the session ends.
  * @module dsh-restart-systemd/client
  */
 
@@ -31,6 +34,7 @@ export type RestartDshKey =
   | 'restart.confirm.body'
   | 'restart.cancel'
   | 'restart.proceed'
+  | 'restart.proceedIdle'
   | 'restart.requesting'
   | 'restart.conflict'
   | 'restart.suppressed'
@@ -39,14 +43,18 @@ export type RestartDshKey =
   | 'restart.unknown'
   | 'restart.failed'
   | 'restart.close'
+  | 'restart.queued.title'
+  | 'restart.queued.body'
+  | 'restart.queued.cancel'
 
 /** English dictionary (key-set source of truth). */
 export const en: Record<RestartDshKey, string> = {
   'restart.label': 'Restart DeepSeek Harness',
   'restart.confirm.title': 'Restart the DeepSeek Harness service?',
-  'restart.confirm.body': 'Restarting will interrupt in-flight tasks and will not resume them automatically. Please restart after your tasks are done.',
+  'restart.confirm.body': '“Restart now” interrupts in-flight tasks and will not resume them automatically. “Restart when idle” waits until every session has finished.',
   'restart.cancel': 'Cancel',
-  'restart.proceed': 'Restart',
+  'restart.proceed': 'Restart now',
+  'restart.proceedIdle': 'Restart when idle',
   'restart.requesting': 'Submitting restart request...',
   'restart.conflict': 'A restart request is already in progress.',
   'restart.suppressed': 'The service just restarted; please wait a moment before trying again.',
@@ -55,15 +63,19 @@ export const en: Record<RestartDshKey, string> = {
   'restart.unknown': 'Could not confirm whether the restart request was accepted. Check the DSH connection status; do not retry repeatedly.',
   'restart.failed': 'Restart request failed',
   'restart.close': 'Close',
+  'restart.queued.title': 'Restart scheduled',
+  'restart.queued.body': 'The restart runs as soon as every session has finished. You can close this window; nothing else is required.',
+  'restart.queued.cancel': 'Cancel the scheduled restart',
 }
 
 /** Simplified Chinese dictionary. */
 export const zh: Record<RestartDshKey, string> = {
   'restart.label': '重启 DeepSeek Harness',
   'restart.confirm.title': '重启 DeepSeek Harness 服务？',
-  'restart.confirm.body': '重启将中断进行中的任务，不会自动续接。建议任务完成后操作。',
+  'restart.confirm.body': '「立即重启」会中断进行中的任务且不会自动续接；「等会话结束」会等到所有会话都跑完再重启。',
   'restart.cancel': '取消',
-  'restart.proceed': '重启',
+  'restart.proceed': '立即重启',
+  'restart.proceedIdle': '等会话结束后重启',
   'restart.requesting': '正在提交重启请求…',
   'restart.conflict': '已有重启请求在处理。',
   'restart.suppressed': '服务刚刚重启，请稍候再试。',
@@ -72,6 +84,9 @@ export const zh: Record<RestartDshKey, string> = {
   'restart.unknown': '无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试。',
   'restart.failed': '重启请求失败',
   'restart.close': '关闭',
+  'restart.queued.title': '已安排重启',
+  'restart.queued.body': '所有会话跑完后会自动重启。可以直接关掉这个窗口，不需要再回来点一次。',
+  'restart.queued.cancel': '取消这次重启',
 }
 
 export const dictionaries = { en, zh }

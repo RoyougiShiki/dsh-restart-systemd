@@ -50,7 +50,22 @@ const shared = {
   external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client'],
 }
 
-for (const outfile of ['../lib/client/index.js', '../lib/client.js']) {
-  await build({ ...shared, outfile: fileURLToPath(new URL(outfile, import.meta.url)) })
-  console.log(`[build-client] wrote ${outfile.replace('../', '')} (${ID})`)
+try {
+  for (const outfile of ['../lib/client/index.js', '../lib/client.js']) {
+    await build({ ...shared, outfile: fileURLToPath(new URL(outfile, import.meta.url)) })
+    console.log(`[build-client] wrote ${outfile.replace('../', '')} (${ID})`)
+  }
+} catch (error) {
+  // The most common failure is an esbuild installed for a different platform
+  // (a repo copied from WSL to Windows, or the reverse): the JS API tries to
+  // start @esbuild/<platform>-<arch>/esbuild, finds only the other one, and
+  // either refuses or fails to spawn it. Say what to do instead of leaving a
+  // bare "You installed esbuild for another platform".
+  console.error('[build-client] esbuild could not run: ' + String(error && error.message ? error.message : error))
+  console.error('[build-client] fix: run \`npm install\` on this platform so node_modules/@esbuild matches, then rebuild.')
+  console.error('[build-client] or bundle with a native esbuild CLI and keep the banner/footer strings above:')
+  console.error('  esbuild src/client/index.ts --bundle --format=cjs --platform=browser --jsx=automatic --target=es2022')
+  console.error('    --banner:js=<banner> --footer:js=<footer> --external:react --external:react/jsx-runtime')
+  console.error('    --external:react-dom --external:react-dom/client --outfile=lib/client/index.js')
+  process.exitCode = 1
 }

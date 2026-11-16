@@ -1,7 +1,11 @@
 /**
- * Client-half wiring, render, and copy verification for the minimal restart
- * button. Real interaction is covered by the ego-browser fixture in
- * scripts/ui-fixture.mjs; this script does not pretend SSR is a browser.
+ * Client-half wiring, render, and copy verification.
+ *
+ * SSR is not a browser: real interaction is covered by the ego-browser fixture
+ * in scripts/ui-fixture.mjs. This script proves the bundle's wiring (one seat,
+ * locale-only inject, loader seed words), that the two restart modes exist in
+ * the dialog and on the wire, that the queued card is a real state rather than
+ * a decoration, and that no dictionary key is orphaned or missing.
  */
 import { readFileSync } from 'node:fs'
 import { createElement } from 'react'
@@ -65,7 +69,7 @@ const [entry] = captured.registers
 check(entry?.options?.id === 'dsh-restart-systemd', 'entry id is dsh-restart-systemd')
 check(entry?.options?.locale === 'restart-dsh', 'entry declares the restart-dsh locale namespace')
 check(typeof entry?.component === 'function', 'entry component is a function')
-check(entry?.options?.inject === undefined, 'entry no longer injects a connection hook')
+check(entry?.options?.inject === undefined, 'entry does not inject a connection hook')
 check(captured.locales[0]?.ns === 'restart-dsh', 'registers the restart-dsh dictionary')
 
 console.log('\n[2/4] no connection-driven reload, recovery, or waiting surface')
@@ -75,21 +79,30 @@ check(!builtClient.includes('useConnectionState'), 'built client has no useConne
 check(!builtClient.includes('restartReloadDecision'), 'built client has no restartReloadDecision')
 const buttonSource = read('../src/client/RestartButton.tsx')
 const indexSource = read('../src/client/index.ts')
+const apiSource = read('../src/client/api.ts')
 check(!buttonSource.includes('location.reload'), 'button source never reloads the page')
 check(!buttonSource.includes('PENDING_TIMEOUT_MS'), 'button source has no recovery timeout')
 check(!indexSource.includes('dsh-client-connection'), 'client index does not import the connection package')
-// v0.4.0: DSH's own ConnectionIndicator narrates outage/reconnect, so this
-// plugin must paint no wait or accepted surface of its own.
 check(!/kind: 'accepted'/.test(buttonSource), 'button source has no accepted phase')
-check(!builtClient.includes('重试恢复') && !builtClient.includes('等待'), 'built client carries no waiting copy')
 check(!buttonSource.includes('requestingHint') && !buttonSource.includes('acceptedHint'), 'button source references no wait/accept copy')
 check(!indexSource.includes('requestingHint') && !indexSource.includes('acceptedHint'), 'dictionaries define no wait/accept copy')
 check((buttonSource.match(/role="alert"/g) || []).length === 1, 'errors render through exactly one bubble role=alert')
-check(buttonSource.includes("const dialog = phase.kind === 'confirming' && createPortal"), 'the only portal dialog is gated on the confirming phase')
+check((buttonSource.match(/role="status"/g) || []).length === 1, 'the queued card is the only status surface')
+check(buttonSource.includes("const dialog = phase.kind === 'confirming' && createPortal"), 'the only modal dialog is gated on the confirming phase')
 check(buttonSource.includes("const bubble = phase.kind === 'error' && createPortal"), 'the error bubble is gated on the error phase')
 check(!buttonSource.includes('setOpen'), 'the component no longer holds an open/closed modal flag')
 
-console.log('\n[3/4] render + copy coverage')
+console.log('\n[3/4] the two restart modes')
+
+check(buttonSource.includes('requestRestart(mode,'), 'the component passes a mode to the API helper')
+check(buttonSource.includes("confirm('now')") && buttonSource.includes("confirm('when-idle')"), 'the dialog offers both restart-now and restart-when-idle')
+check(apiSource.includes("mode: RestartMode = 'now'"), 'the API helper defaults to the interrupting mode')
+check(apiSource.includes("body: JSON.stringify({ reason, mode })"), 'the mode travels in the request body')
+check(apiSource.includes("method: 'GET'") && apiSource.includes("method: 'DELETE'"), 'the helper also reads and cancels the queue')
+check(!buttonSource.includes("mode: 'when-idle'") || buttonSource.includes('RestartMode'), 'the mode type is shared with the API helper')
+check(apiSource.includes("status: 'queued'"), 'the API classifies a queued acceptance separately from an immediate one')
+
+console.log('\n[4/4] render + copy coverage')
 
 const { en, zh } = captured.locales[0].dicts
 const t = (key) => {
@@ -107,11 +120,16 @@ check(html.includes('dsh-restart-trigger'), 'wide mode renders the trigger')
 check(html.includes('aria-label="Restart DeepSeek Harness"'), 'trigger carries the localized aria-label')
 check(html.includes('title="Restart DeepSeek Harness"'), 'trigger carries the localized title')
 check(!html.includes('<dialog'), 'idle state renders no dialog')
+check(!html.includes('data-dsh-restart-queued'), 'idle state is not marked as queued')
 const rail = renderToStaticMarkup(createElement(RestartButton, { wide: false, t }))
 check(rail.includes('dsh-restart-trigger'), 'rail mode renders the trigger')
 
-check(zh['restart.confirm.body'] === '重启将中断进行中的任务，不会自动续接。建议任务完成后操作。', 'Chinese confirm body matches the approved copy')
-check(!('restart.accepted' in zh) && !('restart.acceptedHint' in zh), 'no accepted copy remains in the dictionaries')
+check(zh['restart.proceed'] === '立即重启', 'Chinese restart-now label is explicit about interrupting')
+check(zh['restart.proceedIdle'] === '等会话结束后重启', 'Chinese restart-when-idle label is present')
+check(zh['restart.confirm.body'].includes('立即重启') && zh['restart.confirm.body'].includes('等会话结束'), 'Chinese confirm body explains both modes')
+check(zh['restart.queued.title'] === '已安排重启', 'Chinese queued title is present')
+check(zh['restart.queued.body'].includes('所有会话跑完后会自动重启'), 'Chinese queued body promises the automatic restart')
+check(zh['restart.queued.cancel'] === '取消这次重启', 'Chinese queued cancel is present')
 check(zh['restart.unknown'] === '无法确认重启请求是否被接受，请查看 DSH 连接状态；不要连续重试。', 'Chinese unknown copy matches the approved copy')
 check(zh['restart.conflict'] === '已有重启请求在处理。', 'Chinese conflict copy exists')
 
@@ -125,15 +143,29 @@ for (const key of [...referenced].sort()) {
 }
 const unused = Object.keys(en).filter((key) => !referenced.has(key))
 check(unused.length === 0, 'no unused dictionary keys (unused: ' + (unused.join(', ') || 'none') + ')')
+check(Object.keys(en).length === Object.keys(zh).length, 'en and zh define the same number of keys')
 
-console.log('\n[4/4] source has no removed restart/recovery routes')
+// The served bundle is a build artifact: a stale one would ship old copy even
+// though the sources are right, so decode it and look for this version's words.
+const decodeEscapes = (text) => text.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+const builtCopy = decodeEscapes(read('../lib/client.js'))
+check(builtCopy.includes(zh['restart.proceedIdle']), 'built bundle carries the restart-when-idle label')
+check(builtCopy.includes('所有会话跑完后会自动重启'), 'built bundle carries the queued copy')
+check(builtCopy.includes('"when-idle"'), 'built bundle carries the when-idle mode')
+// The only intended difference between the two artifacts is the emitted
+// sourceMappingURL, which names each file.
+const stripMap = (text) => text.replace(/\/\/# sourceMappingURL=\S+/g, '').replace(/\s+$/, '')
+check(
+  stripMap(builtCopy) === stripMap(decodeEscapes(read('../lib/client/index.js'))),
+  'lib/client.js and lib/client/index.js are the same build',
+)
 
 const hostSource = read('../src/index.ts')
-check(!hostSource.includes("commands.register"), 'host no longer registers a command')
+check(!hostSource.includes('commands.register'), 'host no longer registers a command')
 check(!hostSource.includes('Recovery'), 'host no longer uses Recovery')
-check(!hostSource.includes('agentRunner'), 'host no longer snapshots agents')
 check(!hostSource.includes('dsh-restart-resume.json'), 'host no longer has a resume route')
 check(read('../src/host/restart.ts').includes("'systemctl', '--user', 'restart', SYSTEMD_UNIT"), 'host still uses the fixed systemctl argv')
+check(read('../src/host/windows.ts').includes('Get-Process -Id $OldPid'), 'the Windows watcher waits on the exact pid')
 
 console.log('\n' + (checks - failed) + '/' + checks + ' checks passed')
 process.exit(failed === 0 ? 0 : 1)
