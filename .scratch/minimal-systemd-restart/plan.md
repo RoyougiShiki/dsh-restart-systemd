@@ -165,3 +165,25 @@ B. 宿主公开 HTTP 注册 route → subprocess 替身：
 证据：`npm test` exit 0（`test:client` 52/52、`test:host` 66/66）、`npm run typecheck` exit 0；构建后的 `lib/client/index.js` 对「重启请求已接受」「约 3 秒」「正在提交重启请求」零命中，仅保留 1 处 `aria-modal`（确认框）与气泡的 `role="alert"`。真机浏览器在隔离 TaskSpace `dsh-restart-norewait-20261110`（spaceId 380）跑 **53/53，finished=true，exit 0**，关键判据是 `202` 之后 `[role="dialog"]` 与 `[role="alert"]` 均为 0、按钮恢复可点，隔 1.6s 复查仍无任何界面。该 53/53 只对 [scripts/verify-ui-browser.mjs](../../scripts/verify-ui-browser.mjs) 当前清单成立。
 
 **未做**：真实宿主上的「重启」按钮一次都没点过（证据来自夹具与 subprocess 替身）；改动只到本地提交（`6b688f4`、`3c4fdc1`），未推送、未发布 Release；运行中的 dsh-web 仍是 v0.3.0 的 bundle，需 `systemctl --user restart dsh-web` 并刷新页面才会换成新版。
+
+## v0.5.x：Windows 手动档（2026-11-16）
+
+**需求边界**（用户裁决）：只做 Windows **手动档**——按钮能重启、有会话在跑时排队等结束再重启。不做自动档（不订阅 plugin-manager/operation、不做 restart-required 判定、不做冷却防风暴）。
+
+**形态**：写 flag → `wscript.exe` 起脱离父进程的 PowerShell watcher → `ctx.get('appExit')(0)`。watcher `Wait-Process` 式等**旧 pid** 消失，再按扩展名独立跑启动器（默认 `F:\AIProjects\launchers\native\start-dsh-native.ps1`，可用 `$DSH_HOME/dsh-restart.json` 或 `DSH_RESTART_WINDOWS_LAUNCHER` 覆盖）。**不自己 spawn `dsh web`**：那会和启动器的单实例判断、日志轮转、token 打印打架。
+
+**踩到的三个坑（都已修在代码里）**
+
+1. **node → powershell 的 detached spawn 会静默空跑**：子进程有 pid、无 error、脚本一行不执行。只有经 `wscript.exe` 跑 VBS 再起 PowerShell 才稳定（也正是桌面启动器快捷方式本来走的链路）。
+2. **无 BOM 的脚本被按 ANSI 解码**：中文用户名会把路径变乱码。`.ps1` 写 UTF-8 BOM，`.vbs` 写 UTF-16LE BOM。
+3. **`Start-Process -Wait` 会等到孙进程**：启动器的子进程就是新宿主（要跑几小时），watcher 永远不返回，日志停在 `running the launcher`——看起来像「重启之后就没了」。改成先记 `the launcher was started (pid N)`，再用 `WaitForExit(180000)` 有界等待。实测旧写法在挂了 30 秒子进程时等了 31.3 秒。
+
+**pid 判据**：只认 `CategoryInfo.Category -eq 'ObjectNotFound'` 为「旧进程已消失」；查询报权限不足时记一次日志继续等。把「问不到」当「已退出」会在宿主还占着端口时去拉启动器，启动器回 `already running`，然后宿主才退出——又是没人接。
+
+**验证**：`tsc -b` exit 0；`verify-host` **153/153**、`verify-client` **73/73**。watcher 用真机 E2E 验过（真 `wscript` → 真 PowerShell → 真启动器替身）：目标进程退出后被拉起、pid 不存在时立即拉起、启动器 `exit 7` 时退出码进日志、启动器挂 30 秒子进程时 2 秒返回、生成的脚本在 PowerShell 7 与 5.1 下均 parse OK。
+
+**真机验证（2026-11-16 23:42）**：用户在真实宿主上按下按钮，`dsh-restart-watcher.log` 记 `watching pid 24316` → `old process is gone; running the launcher`，启动器 23:42:59 起 pid 57844，23:43:28 `ready`，接口恢复 `GET /api/restart-dsh → 200 {"queued":null,"armed":false}`。
+
+**边界**：沙箱不允许存活超过一次执行的游离进程，所以「重启宿主」这一步只能由用户点；`schtasks`、`Win32_Process.Create`、detached spawn 三条外部兜底路都试过，全被收掉。
+
+**未做**：自动档（需求明确不做，只留接口）；`package-lock.json` 的 `version` 字段已从 0.3.0 修正为 0.5.1（仅版本字段，依赖未动）；未打 tag、未发 Release。
