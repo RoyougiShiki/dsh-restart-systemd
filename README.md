@@ -162,7 +162,7 @@ dsh plugin --profile web add link:$PWD --config.auto-install-peers=false
 - Linux/WSL：`systemctl --user restart dsh-web`
 - Windows：**装好之后第一次仍需手动重启一次**（此时按钮还不在页面上：新 bundle 要等新宿主起来才加载）。之后每次改插件都可以直接点「立即重启」；有会话在跑就选「等会话结束」，watcher 会按上面的优先级拉起替代进程。
 
-`npm run build` 里的 `scripts/build-client.mjs` 用 esbuild JS API，需要**当前平台**的 esbuild 二进制（`node_modules/@esbuild/<platform>-<arch>`）。在 WSL 装的仓库拿到 Windows 上用会报 "You installed esbuild for another platform"；在 Windows 上 `npm install` 一次即可重装对应平台二进制。
+`npm run build` 里的 `scripts/build-client.mjs` 用 esbuild JS API，需要**当前平台**的 esbuild 二进制（`node_modules/@esbuild/<platform>-<arch>`）。在 WSL 装的仓库拿到 Windows 上用会报 "You installed esbuild for another platform"；在 Windows 上 `npm install` 一次即可重装对应平台二进制。（2026-11-17 在 Windows 实测：`npm install` 后 `npm run build` 通过，产物与 WSL 构建等价，只多出 3 个空行。）
 
 ## 验证
 
