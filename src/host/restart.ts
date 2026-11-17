@@ -4,7 +4,7 @@
  * Two platform strategies, one state machine:
  *  - linux/WSL: \`systemctl --user restart dsh-web\` via \`ctx.subprocess\`.
  *  - win32: a detached PowerShell watcher that waits for this exact pid, then
- *    runs the configured launcher; this process leaves through \`appExit\`.
+ *    replays the launch command (or the configured launcher) after this pid
  *
  * Both write a one-shot flag before acting, keep a single-flight lock until the
  * act settles, and refuse requests for the residual window after a
@@ -18,7 +18,8 @@ import { readFile, writeFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-subprocess'
-import { resolveLauncher, startWatcher } from './windows.ts'
+import type { WatcherRelaunch } from './windows.ts'
+import { resolveRelaunch, startWatcher } from './windows.ts'
 
 /** Service name the WebUI runs under (systemd user unit). */
 export const SYSTEMD_UNIT = 'dsh-web'
@@ -439,20 +440,21 @@ export class RestartScheduler {
    * no relaunch.
    */
   private async actWindows(flagTs: number): Promise<void> {
-    let launcher: string | undefined
+    let relaunch: WatcherRelaunch
     try {
-      launcher = await resolveLauncher({ home: this.home })
+      relaunch = await resolveRelaunch({
+        home: this.home,
+        onMissingLauncher: (path) => {
+          this.log(
+            'warn',
+            'dsh-restart-systemd: the configured launcher is missing (' +
+              path +
+              '); replaying this process command line instead',
+          )
+        },
+      })
     } catch (error) {
-      this.log('error', 'dsh-restart-systemd: could not read the Windows launcher config: ' + String(error))
-      await this.clearOwnFlag(flagTs)
-      return
-    }
-    if (launcher === undefined) {
-      this.log(
-        'error',
-        'dsh-restart-systemd: no Windows launcher is configured; put {"windowsLauncher":"<path to start-dsh-native.ps1>"} in ' +
-          join(this.home, 'dsh-restart.json') + ', or export DSH_RESTART_WINDOWS_LAUNCHER',
-      )
+      this.log('error', 'dsh-restart-systemd: could not work out how to relaunch: ' + String(error))
       await this.clearOwnFlag(flagTs)
       return
     }
@@ -473,7 +475,7 @@ export class RestartScheduler {
     try {
       const started = await startWatcher({
         home: this.home,
-        launcher,
+        relaunch,
         pid: process.pid,
         onError: (error) => {
           this.log('warn', 'dsh-restart-systemd: watcher process error: ' + String(error))
@@ -497,7 +499,10 @@ export class RestartScheduler {
 
     // The flag stays on disk on purpose: the next boot consumes it and opens
     // the residual suppression window.
-    this.log('info', 'dsh-restart-systemd: exiting so the watcher can run the launcher (' + launcher + ')')
+    this.log(
+      'info',
+      'dsh-restart-systemd: exiting so the watcher can relaunch via ' + relaunch.source + ' (' + relaunch.file + ')',
+    )
     try {
       exit(0)
     } catch (error) {

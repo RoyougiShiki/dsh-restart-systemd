@@ -109,27 +109,40 @@ watcher 的逻辑（[src/host/windows.ts](./src/host/windows.ts)）：
 |------|------|
 | `dsh-restart.flag` | 一次性 boot token `{ reason, ts }`；重启后排空时留在磁盘（Windows 分支刻意保留），由下一次 boot 消费并开 15s 抑制窗口 |
 | `dsh-restart-resume.json` | 旧版遗留文件，仅启动时删除；本版不读取、不写入 |
-| `dsh-restart-watcher.ps1` | Windows 专用；每次重启覆盖写入的 watcher 脚本（UTF-8 带 BOM） |
+| `dsh-restart-watcher.ps1` | Windows 专用；每次重启覆盖写入的 watcher 脚本（UTF-8 带 BOM）。只等**这一次的 pid** 退出，然后拉起替代进程 |
 | `dsh-restart-watcher.vbs` | Windows 专用；用 `wscript.exe` 启动上面那个脚本的壳（UTF-16LE 带 BOM） |
-| `dsh-restart-watcher.log` | Windows 专用；watcher 自己追加的进度日志（等谁、何时超时、启动了哪个启动器） |
-| `dsh-restart.json` | Windows 专用配置，见下 |
+| `dsh-restart-watcher.log` | Windows 专用；watcher 追加的进度日志（等谁、何时超时、走哪条路拉起、结果如何） |
+| `dsh-restart-relaunch.log` | Windows 专用；`self` 方式下新宿主的 stdout——新宿主的 token URL 就打在里 |
+| `dsh-restart-relaunch.err.log` | Windows 专用；`self` 方式下新宿主的 stderr，起不来先看它 |
+| `dsh-restart.json` | Windows 可选配置，见下 |
 
-## Windows 配置
+## Windows 重启是怎么做到的
 
-插件不知道你的 DSH 是怎么被拉起来的，必须告诉它。二选一：
+Windows 没有可调用的服务管理器，DSH 宿主也没有进程内重启钩子，所以插件只能**派一个活过自己的 watcher**：点按钮 → 派 watcher → `appExit(0)` → watcher 等这个 pid 真的退出 → 拉起替代进程。
+
+拉起什么，按优先级二选一，**两条都不需要配置**：
+
+| 来源 | 何时使用 | 干什么 |
+|------|----------|--------|
+| `launcher` | `$DSH_HOME/dsh-restart.json` 的 `windowsLauncher`（或环境变量 `DSH_RESTART_WINDOWS_LAUNCHER`）存在 | 跑那个脚本/程序。启动器自带日志轮转、token 提取与进度窗，能用就用它 |
+| `self` | 没配置，或配了但文件已不存在 | 原样重放**当前进程的命令行**（`process.execPath` + 原 argv），工作目录不变，stdout/stderr 落到 `dsh-restart-relaunch.log` / `.err.log` |
+
+`self` 是兜底：命令行手起的 `dsh web`、换过的启动器、别的路径下的启动器都能用——插件不假设你是怎么起的，只重放你正在跑的那条命令。
+
+### 可选：指定启动器
 
 ```jsonc
 // $DSH_HOME/dsh-restart.json   (~/.dsh/dsh-restart.json)
 { "windowsLauncher": "F:\\AIProjects\\launchers\\native\\start-dsh-native.ps1" }
 ```
 
-或设置环境变量 `DSH_RESTART_WINDOWS_LAUNCHER`（优先于配置文件）。
+或设置环境变量 `DSH_RESTART_WINDOWS_LAUNCHER`（优先于配置文件）。配了但文件不存在不算失败：watcher 日志记一条 warn，然后走 `self`。
 
-启动器调用方式按扩展名决定（都以独立进程运行，见上）：`.ps1` → `powershell -NoProfile -ExecutionPolicy Bypass -File "<path>"`；`.cmd` / `.bat` → `cmd.exe /c "<path>"`；其它 → 直接运行该文件。
+启动器调用方式按扩展名决定（都以独立进程运行）：`.ps1` → `powershell -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "<path>"`；`.cmd` / `.bat` → `cmd.exe /c "<path>"`；其它 → 直接运行该文件。
 
-**启动器脚本本身要满足「进程不在时它会启动一个新的」**。本仓库实测过的 `launchers/native/start-dsh-native.ps1` 正是如此：端口没监听 → 轮转日志 → `Start-Process dsh web ...` → 等 token 行 → 开窗。它没有 `-Restart` 开关，也不需要——watcher 保证了旧进程已经退出，脚本自然走「端口空」那条分支。
+启动器要满足「进程不在时它会启动一个新的」。实测过的 `launchers/native/start-dsh-native.ps1` 正是如此：端口没监听 → 轮转日志 → `Start-Process dsh web ...` → 等 token 行 → 开窗。它没有 `-Restart` 开关，也不需要——watcher 保证了旧进程已经退出。
 
-注意：不要把「启动器」配成一个只会 `stop` 的脚本；那样退出之后就没人拉起来了。插件不会自己 `spawn 'dsh web'`（会与启动器的单实例判断、日志轮转、token 提取逻辑打架）。
+不要把启动器配成只会 `stop` 的脚本；那样退出之后就没人拉起来了。插件不会自己 `spawn 'dsh web'`（会与启动器的单实例判断、日志轮转、token 提取逻辑打架）。
 
 ## 安装
 
@@ -147,7 +160,7 @@ dsh plugin --profile web add link:$PWD --config.auto-install-peers=false
 **装完必须重启宿主进程一次**（插件改动不走 HMR；host 侧入口与 client bundle 都换新了）：
 
 - Linux/WSL：`systemctl --user restart dsh-web`
-- Windows：关掉 DSH 进程后用你的启动器重新起，或——装好本插件并配好 `windowsLauncher` 之后——直接点按钮的「立即重启」让它自己完成一次。
+- Windows：**装好之后第一次仍需手动重启一次**（此时按钮还不在页面上：新 bundle 要等新宿主起来才加载）。之后每次改插件都可以直接点「立即重启」；有会话在跑就选「等会话结束」，watcher 会按上面的优先级拉起替代进程。
 
 `npm run build` 里的 `scripts/build-client.mjs` 用 esbuild JS API，需要**当前平台**的 esbuild 二进制（`node_modules/@esbuild/<platform>-<arch>`）。在 WSL 装的仓库拿到 Windows 上用会报 "You installed esbuild for another platform"；在 Windows 上 `npm install` 一次即可重装对应平台二进制。
 
@@ -161,7 +174,7 @@ npm run typecheck
 ```
 
 两套测试都**不启动真实 systemctl、不启动 PowerShell watcher、不向 3081 或真实 profile 发请求**：
-- [scripts/verify-host.mjs](./scripts/verify-host.mjs)（**153 checks**）用真实 loopback HTTP + `subprocess.spawn` 硬替身 + `setDetachedSpawner` 假 detach，`DSH_HOME` 全部指向临时目录，`RestartScheduler` 直接注入毫秒级 `delayMs/pollMs/settleMs` 与 `platform`。覆盖：路由与方法矩阵、5 种鉴权拒绝、`invalid-mode`、单飞、boot 抑制、flag 写失败、Linux argv/延迟/日志/失败清理、平台矩阵、Windows 五条失败路径（无启动器 / 有启动器 / 同步与异步的 watcher 起不来 / 无 `appExit`）并断言 watcher 脚本里是 `Get-Process -Id $OldPid -ErrorAction Stop`、只把 `ObjectNotFound` 当消失（权限失败要继续等）、且**没有** `Get-NetTCPConnection`/`netstat`、VBS 壳与两种脚本的编码（UTF-16LE BOM / UTF-8 BOM）、启动器按扩展名以独立进程运行、用有界 `WaitForExit` 而非 `-Wait`、先记「已启动」再等退出码、源码里没有漏进来的 TypeScript 表达式（`String(`/`undefined`/`${`）、`when-idle` 排队/触发/settle 推迟/取消/注册表缺失、`dispose`、race 探针。
+- [scripts/verify-host.mjs](./scripts/verify-host.mjs)（**181 checks**）用真实 loopback HTTP + `subprocess.spawn` 硬替身 + `setDetachedSpawner` 假 detach，`DSH_HOME` 全部指向临时目录，`RestartScheduler` 直接注入毫秒级 `delayMs/pollMs/settleMs` 与 `platform`。覆盖：路由与方法矩阵、5 种鉴权拒绝、`invalid-mode`、单飞、boot 抑制、flag 写失败、Linux argv/延迟/日志/失败清理、平台矩阵、Windows 各失败路径（没有启动器 → self 重放 / 有启动器 / 启动器文件消失回落 self / 同步与异步的 watcher 起不来 / 无 `appExit`）、`windowsArgument` 的引号与结尾反斜杠规则、watcher 脚本里是 `Get-Process -Id $OldPid -ErrorAction Stop` 且只把 `ObjectNotFound` 当消失（权限失败要继续等）、**没有** `Get-NetTCPConnection`/`netstat`、VBS 壳与两种脚本的编码（UTF-16LE BOM / UTF-8 BOM）、启动器按扩展名以独立进程运行、launcher 用有界 `WaitForExit` 取退出码而 self 只做短暂观察、先记「已启动」再等结果、源码里没有漏进来的 TypeScript 表达式（`String(`/`undefined`/`${`）、`when-idle` 排队/触发/settle 推迟/取消/注册表缺失、`dispose`、race 探针。
 - [scripts/verify-client.mjs](./scripts/verify-client.mjs)（**73 checks**）通过 loader 协议加载 [lib/client/index.js](./lib/client/index.js)，检查运行时 require 仅 `react`、`react-dom`、`react/jsx-runtime`，再做 SSR 渲染与中英字典覆盖（en/zh 键数一致，现 17 键，无孤立键，`role="status"` 恰好一处）；它是**接线/文案级**验证，不是浏览器点击验证。
 - 浏览器交互见下节。
 
@@ -174,7 +187,8 @@ watcher 是真的会去拉进程的代码，值得在真机上验一次。做法
 node -e "import('file:///.../lib/host/windows.js').then(async (m) => {
   const { spawn } = await import('node:child_process')
   const victim = spawn(process.execPath, ['-e', 'setTimeout(() => process.exit(0), 5000)'], { stdio: 'ignore' })
-  const started = await m.startWatcher({ home: process.env.USERPROFILE + '\\.dsh', launcher: 'F:\\path\\to\\fake-launcher.ps1', pid: victim.pid })
+  const relaunch = m.selfRelaunch({ execPath: process.execPath, argv: [process.execPath, '-e', 'console.log(1)'], cwd: process.cwd(), home: process.env.USERPROFILE + '\\.dsh' })
+  const started = await m.startWatcher({ home: process.env.USERPROFILE + '\\.dsh', relaunch, pid: victim.pid })
   console.log(started.logPath)
 })"
 ```
@@ -183,18 +197,21 @@ node -e "import('file:///.../lib/host/windows.js').then(async (m) => {
 
 | 场景 | 结果 |
 |------|------|
-| 目标进程 5 秒后退出 | watcher 等它消失 + 800ms，调启动器，日志记 `the launcher exited with code 0` |
-| 目标 pid 启动前就已不存在 | 立即调启动器 |
-| 目标进程一直活着（把 120s 临时改 2s） | 写 `timed out waiting for the old process`，`exit 1`，**不调启动器** |
-| 启动器是 `exit 3` 的脚本 | 记 `the launcher exited with code 3`，watcher 自己正常退出 |
-| 启动器路径不存在 | 记 `the launcher exited with code -196608`（PowerShell 的 `-File` 找不到文件） |
+| 场景 | 结果 |
+|------|------|
+| 目标进程 5 秒后退出 | watcher 等它消失 + 800ms，拉起替代进程，日志记 `the replacement is running` / `the replacement exited within 5s` |
+| 目标 pid 启动前就已不存在 | 立即拉起 |
+| 目标进程一直活着（把 120s 临时改 2s） | 写 `timed out waiting for the old process`，`exit 1`，**不拉起** |
+| 启动器是 `exit 3` 的脚本 | 记 `the relaunch exited with code 3`，watcher 自己正常退出 |
+| 启动器路径不存在 | 记 `the relaunch exited with code -196608`（PowerShell 的 `-File` 找不到文件） |
 | 启动器路径含中文与空格 | 正常调用（BOM 编码生效） |
 | **父进程（冒充宿主）startWatcher 后立刻 `process.exit(0)`** | watcher 存活，父进程消失后被拉起，日志完整 |
-| 启动器自己挂一个 30 秒的子进程后 `exit 7` | 2 秒就记 `the launcher exited with code 7`（有界等待，不等子进程） |
+| 启动器自己挂一个 30 秒的子进程后 `exit 7` | 2 秒就记 `the relaunch exited with code 7`（有界等待，不等子进程） |
 | 同上，但用的是旧写法 `Start-Process -Wait` | `-Wait` 等了 **31.3 秒**才返回——这就是去掉 `-Wait` 的理由 |
+| `self` 重放（2026-11-17 实测） | 目标 pid 5 秒后退出 → 拉起 `node` 重放 → 日志 `watching pid N; relaunch self via node.exe` → `the replacement exited within 5s`，重放进程真的执行了 |
 | 真实宿主（2026-11-16 23:42 按下按钮） | `watching pid 24316` → `old process is gone` → 启动器起 pid 57844 → 23:43:28 `ready` |
 
-`dsh-restart-watcher.log` 逐行可读（「watching pid N」「old process is gone; running the launcher」「the launcher exited with code N」「watcher finished」），出事时先看它——**它不存在就说明连 VBS 壳都没跑起来**（第一次踩到的正是这个：脚本写了，日志一条没有）。
+`dsh-restart-watcher.log` 逐行可读（「watching pid N」「relaunch launcher/self via …」「old process is gone; starting the replacement」「the relaunch was started (pid N)」「the replacement is running」/`the relaunch exited with code N`「watcher finished」），出事时先看它——**它不存在就说明连 VBS 壳都没跑起来**（第一次踩到的正是这个：脚本写了，日志一条没有）。`self` 方式起不来时，再看 `dsh-restart-relaunch.err.log`。
 
 ### 浏览器验证（单独运行，不进入 npm test）
 
@@ -246,7 +263,7 @@ rm -f ~/.dsh/dsh-restart.flag ~/.dsh/dsh-restart-resume.json ~/.dsh/dsh-restart-
 
 - **平台**：支持 Linux/WSL 与 Windows；其它平台 501。
 - **Linux 服务单元固定**：argv 恒为 `systemctl --user restart dsh-web`；若以其它方式启动 DSH，spawn 会失败并记日志，不会产生重启。
-- **Windows 必须有启动器**：没配 `windowsLauncher`／`DSH_RESTART_WINDOWS_LAUNCHER` 时按钮会 500 并打印该配哪个文件；插件不会自己拉 `dsh web`。
+- **Windows 不需要配置**：默认重放当前命令行（`self`）；配了 `windowsLauncher`/`DSH_RESTART_WINDOWS_LAUNCHER` 且文件存在则优先用启动器。两者都失败（例如 `appExit` 不可用）时按钮回 500 并保持宿主存活，不会退到一个没人拉起的空场。
 - **Windows 重启会重启整个宿主进程**，不只是 WebUI；watcher 只等 120 秒，超时就不拉起（只留日志）。
 - **排队只认 agent 状态**：`when-idle` 依据 `ctx.agents.list()` 的 `running` 个数，settle 窗口 5 秒防「前一个会话结束、下一个立刻开始」时被打断。若某个后台任务不在 agent 注册表里（例如独立于会话的批处理），排队看不到它。
 - **不自动续接、不自动刷新**：被中断的 agent 任务不会恢复；页面是否恢复、何时恢复由 DSH 连接层决定，本插件不轮询连接、不 `location.reload`、不注入 `Continue.`。改了 **client** 侧代码时，重启后仍需手动刷新页面让浏览器拿到新 bundle。

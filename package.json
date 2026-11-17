@@ -1,6 +1,6 @@
 {
   "name": "dsh-restart-systemd",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "description": "WebUI restart button for DeepSeek Harness: a sidebar-footer trigger that restarts the host on Linux/WSL (systemctl --user restart dsh-web) or Windows (detached watcher + your launcher), either immediately or once every session has finished, with single-flight dedup, a loopback security fence, and a post-restart suppression flag.",
   "type": "module",
   "main": "lib/index.js",

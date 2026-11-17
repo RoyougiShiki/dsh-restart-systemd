@@ -4,7 +4,7 @@
  * Two platform strategies, one state machine:
  *  - linux/WSL: \`systemctl --user restart dsh-web\` via \`ctx.subprocess\`.
  *  - win32: a detached PowerShell watcher that waits for this exact pid, then
- *    runs the configured launcher; this process leaves through \`appExit\`.
+ *    replays the launch command (or the configured launcher) after this pid
  *
  * Both write a one-shot flag before acting, keep a single-flight lock until the
  * act settles, and refuse requests for the residual window after a

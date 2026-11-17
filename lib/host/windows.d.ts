@@ -5,8 +5,16 @@
  * in-process self-restart hook: cordis-plugin-loader's `exit()` is a no-op and
  * the only graceful way out is `ctx.get('appExit')`. A restart therefore needs
  * a process that outlives this one, so this module writes a small PowerShell
- * watcher, starts it detached, and hands the relaunch to the user's launcher
- * script once this exact process is gone.
+ * watcher, starts it detached, and lets it start the replacement once this exact
+ * process is gone.
+ *
+ * The replacement is one of two things:
+ *  - `launcher`: the script configured in `$DSH_HOME/dsh-restart.json` (or
+ *    `DSH_RESTART_WINDOWS_LAUNCHER`). A launcher owns log rotation, the token URL
+ *    and its own progress window, so it is the nicer path when it exists.
+ *  - `self`: this process's own command line, replayed with `process.execPath`.
+ *    Needs no configuration and no knowledge of how DSH was started, which is
+ *    what makes the button work for a hand-started `dsh web`.
  *
  * The watcher is never started directly: node cannot start `powershell.exe`
  * detached here - the child exits 0 without running a single line of the
@@ -29,15 +37,34 @@ export declare const WATCHER_FILE = "dsh-restart-watcher.ps1";
 export declare const WATCHER_VBS_FILE = "dsh-restart-watcher.vbs";
 /** Where the watcher appends its own progress log. */
 export declare const WATCHER_LOG_FILE = "dsh-restart-watcher.log";
+/**
+ * Where a self relaunch sends the new host's stdout and stderr.
+ *
+ * A detached, hidden child has no console of its own, and the token URL the new
+ * host prints at boot is the only way back into the Web UI. Overwritten on
+ * every restart.
+ */
+export declare const RELAUNCH_OUT_FILE = "dsh-restart-relaunch.log";
+/** Where a self relaunch sends the new host's stderr. */
+export declare const RELAUNCH_ERR_FILE = "dsh-restart-relaunch.err.log";
 /** How long the watcher waits for the old process before giving up. */
 export declare const WATCH_TIMEOUT_SECONDS = 120;
 /**
- * How long the watcher waits for the launcher's exit code before leaving it.
+ * How long the watcher waits for the relaunch's exit code before leaving it.
  * Bounded on purpose: `Start-Process -Wait` returned only when the launcher's
  * own children finished too (measured: a launcher that spawned a 22s child
- * made the wait 22s), and the launcher's children include the new host.
+ * made the wait 22s), and a launcher's children include the new host.
  */
 export declare const LAUNCHER_WAIT_MS = 180000;
+/**
+ * How long a self relaunch is watched for an early death.
+ *
+ * The replacement is the new host and is meant to outlive the watcher, so it is
+ * never waited on to completion. Start-Process also cannot report the exit code
+ * of a redirected child (it comes back empty), so only "it died within a few
+ * seconds" is worth logging; the why is in `$DSH_HOME/dsh-restart-relaunch.err.log`.
+ */
+export declare const RELAUNCH_GRACE_SECONDS = 5;
 /**
  * How long to watch a freshly spawned shim for an immediate failure before
  * trusting it. Only spawn errors (missing wscript.exe) show up this fast.
@@ -64,33 +91,84 @@ export declare function wscriptPath(env?: NodeJS.ProcessEnv): string;
 export declare function psLiteral(value: string): string;
 /** Quote one VBScript string literal. */
 export declare function vbsLiteral(value: string): string;
+/**
+ * Quote one argument the way Windows itself splits a command line.
+ *
+ * `Start-Process -ArgumentList` joins an array with single spaces and
+ * quotes nothing, so an unquoted `C:Program Files...` would arrive as two
+ * arguments. The rules below are the ones every CRT parser agrees on: quote when
+ * the value is empty or holds whitespace / a quote, double the backslashes that
+ * precede a quote, and double trailing backslashes so they cannot escape the
+ * closing quote.
+ * @param value - one argument, already unquoted.
+ * @returns the argument as it must appear on a Windows command line.
+ */
+export declare function windowsArgument(value: string): string;
+/** Which replacement the watcher starts. */
+export type RelaunchSource = 'launcher' | 'self';
+/** Everything the watcher needs to start the replacement host. */
+export interface WatcherRelaunch {
+    /** Where this plan came from; only used for logging. */
+    source: RelaunchSource;
+    /** The program to start: powershell.exe for a .ps1 launcher, node.exe for self. */
+    file: string;
+    /** One already-quoted argument string, the shape Start-Process wants. */
+    argumentList: string;
+    /** Working directory for the replacement, or undefined to inherit. */
+    workingDirectory?: string;
+    /** Where the replacement's stdout goes (self relaunch only). */
+    stdoutPath?: string;
+    /** Where the replacement's stderr goes (self relaunch only). */
+    stderrPath?: string;
+}
 /** The program that runs a launcher of this kind, plus its argument string. */
 export declare function launcherCommand(launcher: string, env?: NodeJS.ProcessEnv): {
     file: string;
     argumentList: string;
 };
+/** A relaunch through the configured launcher script. */
+export declare function launcherRelaunch(launcher: string, env?: NodeJS.ProcessEnv): WatcherRelaunch;
 /**
- * The lines that actually run the launcher.
+ * A relaunch that replays this process's own command line.
  *
- * The launcher runs as its own process instead of being dot-called: a launcher
- * that ends in `exit 1` would otherwise terminate the watcher itself and leave
- * no trace of why the host never came back. Running it separately keeps the
- * exit code, so the failure lands in the watcher log.
- *
- * Window style is deliberately passed to PowerShell (`-WindowStyle Hidden`)
- * rather than to Start-Process: the launcher is expected to show its own
- * progress window during a multi-minute cold start, and Start-Process's
- * -WindowStyle Hidden hides that window as well.
+ * This is what makes the button work no matter how DSH was started: the argv
+ * the host already has is exactly the argv the replacement needs, so no
+ * launcher, no service manager and no knowledge of the install layout is
+ * involved. Output goes to files under `$DSH_HOME` because a detached, hidden
+ * child has no console to print the token URL to.
+ * @param options - this process's execPath / argv / cwd, plus the DSH home.
+ * @returns the plan the watcher replays.
  */
-export declare function launcherInvocation(launcher: string, env?: NodeJS.ProcessEnv): string[];
+export declare function selfRelaunch(options: {
+    execPath: string;
+    argv: readonly string[];
+    cwd: string;
+    home: string;
+}): WatcherRelaunch;
+/**
+ * The lines that actually start the replacement.
+ *
+ * The replacement runs as its own process instead of being dot-called: a
+ * launcher that ends in `exit 1` would otherwise terminate the watcher itself
+ * and leave no trace of why the host never came back. Running it separately
+ * keeps the exit code, so the failure lands in the watcher log.
+ *
+ * Window style is deliberately passed to PowerShell (`-WindowStyle Hidden`) rather
+ * than to Start-Process: a launcher is expected to show its own progress window
+ * during a multi-minute cold start, and Start-Process's -WindowStyle Hidden
+ * hides that window as well.
+ * @param relaunch - the plan built by `resolveRelaunch`.
+ * @returns the PowerShell lines, ready to join into the watcher script.
+ */
+export declare function relaunchInvocation(relaunch: WatcherRelaunch): string[];
 /**
  * Build the watcher script body.
- * @param options - the pid to wait for, the launcher to run, and the log path.
+ * @param options - the pid to wait for, the relaunch plan, and the log path.
  * @returns the PowerShell source written next to the flag file.
  */
 export declare function windowsWatcherScript(options: {
     pid: number;
-    launcher: string;
+    relaunch: WatcherRelaunch;
     logPath: string;
 }): string;
 /**
@@ -113,7 +191,7 @@ export declare function windowsWatcherShim(options: {
     powershell?: string;
 }): string;
 /**
- * Resolve the launcher script or executable to run after this process exits.
+ * Resolve the launcher script or executable configured for this machine.
  * @param options - the DSH home and the process environment.
  * @returns the configured path, or undefined when nothing is configured.
  * @throws when the config file exists but cannot be read or parsed.
@@ -123,15 +201,36 @@ export declare function resolveLauncher(options: {
     env?: NodeJS.ProcessEnv;
 }): Promise<string | undefined>;
 /**
+ * Decide how the watcher will start the replacement.
+ *
+ * A configured launcher wins, because it also rotates logs, prints the token
+ * URL and shows its own progress window. Everything else - no config, or a
+ * config that points at a launcher which no longer exists - falls back to
+ * replaying this process's own command line, so the button keeps working after
+ * the launcher is moved, replaced, or never used in the first place.
+ * @param options - the DSH home, this process's execPath / argv / cwd, and a
+ *   hook for the "configured launcher is missing" warning.
+ * @returns the plan to hand to `startWatcher`.
+ * @throws when the config file exists but cannot be read or parsed.
+ */
+export declare function resolveRelaunch(options: {
+    home: string;
+    env?: NodeJS.ProcessEnv;
+    execPath?: string;
+    argv?: readonly string[];
+    cwd?: string;
+    onMissingLauncher?: (path: string) => void;
+}): Promise<WatcherRelaunch>;
+/**
  * Write the watcher script and its wscript shim, then start the shim detached
  * so it survives our exit. Throws when the shim cannot be started at all —
  * exiting into a dead host with no relaunch is the one failure worth refusing.
- * @param options - home, launcher path, the pid to wait for, and an error hook.
+ * @param options - home, the relaunch plan, the pid to wait for, and an error hook.
  * @returns the script and shim paths, the log path, and the watcher pid.
  */
 export declare function startWatcher(options: {
     home: string;
-    launcher: string;
+    relaunch: WatcherRelaunch;
     pid: number;
     env?: NodeJS.ProcessEnv;
     onError?: (error: Error) => void;

@@ -29,13 +29,20 @@ const {
   windowsWatcherScript,
   windowsWatcherShim,
   launcherCommand,
+  launcherRelaunch,
+  selfRelaunch,
+  resolveRelaunch,
+  relaunchInvocation,
+  windowsArgument,
   psLiteral,
   vbsLiteral,
   powershellPath,
   wscriptPath,
   LAUNCHER_WAIT_MS,
+  RELAUNCH_GRACE_SECONDS,
+  RELAUNCH_OUT_FILE,
+  RELAUNCH_ERR_FILE,
 } = await import('../lib/host/windows.js')
-
 let failed = 0
 let checks = 0
 const check = (condition, label) => {
@@ -732,24 +739,35 @@ try {
   }
 
   {
-    // No launcher configured: refuse loudly, keep the host alive, clear the flag.
+  {
+    // No launcher configured: replay this very command line instead of failing.
     const { scheduler, captured, home } = makeScheduler({ platform: 'win32', delayMs: 20 })
-    setDetachedSpawner(() => {
-      captured.detached = (captured.detached ?? 0) + 1
+    const spawned = []
+    setDetachedSpawner((command, args, options) => {
+      spawned.push({ command, args, options })
       return { pid: 4242, unref() {}, on() {} }
     })
     try {
       const result = await scheduler.schedule('win32-no-launcher')
-      check(result.kind === 'scheduled', 'a Windows restart is accepted before the launcher is checked')
-      await sleep(90)
-      check(captured.exits.length === 0, 'no launcher means no exit')
-      check((captured.detached ?? 0) === 0, 'no launcher means no watcher')
-      check(captured.logs.some((entry) => entry.level === 'error' && entry.message.includes('no Windows launcher is configured')), 'the missing launcher is logged as an error with the fix')
-      check(!existsSync(join(home, 'dsh-restart.flag')), 'the refused attempt clears its own flag')
+      check(result.kind === 'scheduled', 'a Windows restart is accepted without a launcher')
+      await sleep(700)
+      check(captured.exits.length === 1 && captured.exits[0] === 0, 'without a launcher the host still leaves through appExit(0)')
+      check(spawned.length === 1, 'without a launcher the watcher is still started')
+      check(spawned.every((item) => item.command === wscriptPath()), 'the fallback uses the same wscript shim')
+      check(!captured.logs.some((entry) => entry.level === 'error'), 'a missing launcher is no longer an error')
+      const script = readFileSync(join(home, 'dsh-restart-watcher.ps1'), 'utf8').replace(/^\uFEFF/, '')
+      check(script.includes(psLiteral(process.execPath)), 'the fallback replays the executable that is running now')
+      check(script.includes("$RelaunchSource = 'self'"), 'the watcher records that this is a self relaunch')
+      check(script.includes('Start-Process -FilePath ' + psLiteral(process.execPath)), 'the fallback starts the executable directly, with no shell in between')
+      check(script.includes('-WorkingDirectory ' + psLiteral(process.cwd())), 'the fallback keeps the working directory of this process')
+      check(script.includes('dsh-restart-relaunch.log') && script.includes('dsh-restart-relaunch.err.log'), 'the fallback sends the new host output to its own log files')
+      check(script.includes('-RedirectStandardOutput') && script.includes('-RedirectStandardError'), 'the fallback redirects both streams, or a hidden host would have nowhere to write')
+      check(existsSync(join(home, 'dsh-restart.flag')), 'the flag stays on disk for the next boot to consume')
     } finally {
       setDetachedSpawner(undefined)
       scheduler.dispose()
     }
+  }
   }
 
   {
@@ -757,6 +775,8 @@ try {
     const home = mkdtempSync(join(tmpdir(), 'dsh-restart-win32-'))
     roots.push(home)
     const launcher = join(home, 'start-dsh-native.ps1')
+    // The launcher must exist for the launcher path to be chosen over the self replay.
+    writeFileSync(launcher, '# fake launcher', 'utf8')
     writeFileSync(join(home, 'dsh-restart.json'), JSON.stringify({ windowsLauncher: launcher }), 'utf8')
     const { scheduler, captured } = makeScheduler({ platform: 'win32', delayMs: 20, home })
     const spawned = []
@@ -791,23 +811,23 @@ try {
       const script = readFileSync(scriptPath, 'utf8').replace(/^\uFEFF/, '')
       check(script.includes('Get-Process -Id $OldPid'), 'the watcher waits on the exact pid, not on the port')
       check(script.includes("$OldPid = " + String(process.pid)), 'the watcher waits for this very process')
-      check(script.includes(psLiteral(launcher)), 'the watcher holds the launcher path as a quoted literal')
+      check(script.includes(launcher.replace(/'/g, "''")), 'the watcher holds the launcher path as a quoted literal')
       check(
         script.includes('Start-Process -FilePath ' + psLiteral(powershellPath())),
         'a .ps1 launcher runs as its own PowerShell process, not dot-called',
       )
-      check(!script.includes('& $Launcher'), 'the launcher is never dot-called - its exit would kill the watcher')
-      check(script.includes('-PassThru'), 'the watcher keeps the launcher handle so it can read the exit code')
+      check(!script.includes('& $Relaunch'), 'the relaunch is never dot-called - its exit would kill the watcher')
+      check(script.includes('-PassThru'), 'the watcher keeps the relaunch handle so it can read the exit code')
       check(
         !script.includes('-Wait'),
         '-Wait is avoided: it can sit on the launcher children (browser, new host) and the watcher would never return',
       )
       check(
-        script.includes('$LauncherProc.WaitForExit(' + String(LAUNCHER_WAIT_MS) + ')'),
-        'the launcher wait is bounded instead of unbounded',
+        script.includes('$RelaunchProc.WaitForExit(' + String(LAUNCHER_WAIT_MS) + ')'),
+        'the relaunch wait is bounded instead of unbounded',
       )
       check(
-        script.includes("Write-WatcherLog ('the launcher was started (pid '"),
+        script.includes("Write-WatcherLog ('the relaunch was started (pid '"),
         'the handoff is logged before waiting, so a later hang still leaves a record',
       )
       // A TypeScript expression that leaks into the PowerShell source is a
@@ -818,15 +838,15 @@ try {
         'Start-Process does not hide the launcher window (a cold start would look hung)',
       )
       check(
-        script.includes("Write-WatcherLog ('the launcher exited with code '"),
+        script.includes("Write-WatcherLog ('the relaunch exited with code '"),
         "the launcher's exit code lands in the watcher log",
       )
       check(
-        script.includes("Write-WatcherLog ('the launcher could not be started: '"),
+        script.includes("Write-WatcherLog ('the relaunch could not be started: '"),
         'a launcher that cannot even start is logged instead of passing as success',
       )
       check(
-        !/(\$LauncherProc\.ExitCode\s+-ne\s+\$null|\$null\s+-ne\s+\$LauncherProc\.ExitCode)/.test(script),
+        !/(\$RelaunchProc\.ExitCode\s+-ne\s+\$null|\$null\s+-ne\s+\$RelaunchProc\.ExitCode)/.test(script),
         'the exit-code check does not rely on a null sentinel',
       )
       check(
@@ -897,6 +917,86 @@ try {
     check(bat.argumentList.startsWith('/c '), 'a .cmd launcher is passed as /c')
     const exe = launcherCommand('F:\\ai\\launchers\\start.exe')
     check(exe.file === 'F:\\ai\\launchers\\start.exe' && exe.argumentList === '', 'any other launcher runs as itself')
+  }
+
+  {
+    // Windows command-line quoting: the self relaunch replays argv verbatim, so
+    // a path with a space must survive as one argument.
+    const backslash = String.fromCharCode(92)
+    const quote = String.fromCharCode(34)
+    check(windowsArgument('plain') === 'plain', 'a plain argument needs no quoting')
+    check(windowsArgument('a b') === quote + 'a b' + quote, 'an argument with a space is quoted')
+    check(
+      windowsArgument('say ' + quote + 'hi' + quote) ===
+        quote + 'say ' + backslash + quote + 'hi' + backslash + quote + quote,
+      'an embedded quote is escaped with one backslash',
+    )
+    check(
+      windowsArgument('C:' + backslash + 'dir with space' + backslash) ===
+        quote + 'C:' + backslash + 'dir with space' + backslash + backslash + quote,
+      'a trailing backslash is doubled before the closing quote',
+    )
+    check(windowsArgument('') === quote + quote, 'an empty argument becomes an empty quoted pair')
+
+    const plan = selfRelaunch({
+      execPath: 'C:' + backslash + 'node' + backslash + 'node.exe',
+      argv: ['node.exe', 'x' + backslash + 'bin.js', 'web', '--port', '3081'],
+      cwd: 'C:' + backslash + 'work dir',
+      home: 'C:' + backslash + 'home',
+    })
+    check(plan.source === 'self' && plan.file.endsWith('node.exe'), 'self relaunch replays the same executable')
+    check(
+      plan.argumentList === 'x' + backslash + 'bin.js web --port 3081',
+      'self relaunch keeps the original arguments (got ' + plan.argumentList + ')',
+    )
+    check(
+      String(plan.stdoutPath).endsWith(RELAUNCH_OUT_FILE) && String(plan.stderrPath).endsWith(RELAUNCH_ERR_FILE),
+      'self relaunch gives the replacement its own log files',
+    )
+    const invocation = relaunchInvocation(plan).join('\n')
+    check(
+      invocation.includes('-WorkingDirectory ' + psLiteral(plan.workingDirectory)),
+      'the relaunch keeps the working directory of the old host',
+    )
+    check(
+      invocation.includes('-RedirectStandardOutput ' + psLiteral(plan.stdoutPath)),
+      'the relaunch redirects stdout, so a hidden host is not silent',
+    )
+    check(
+      invocation.includes('-RedirectStandardError ' + psLiteral(plan.stderrPath)),
+      'the relaunch redirects stderr',
+    )
+    check(invocation.includes('-PassThru -ErrorAction Stop'), 'the relaunch keeps a handle and fails loudly')
+
+    const launcherPlan = launcherRelaunch('F:' + backslash + 'ai' + backslash + 'start.ps1')
+    check(launcherPlan.source === 'launcher' && launcherPlan.file === powershellPath(), 'a configured launcher is still the first choice')
+    check(launcherPlan.workingDirectory === undefined, 'a launcher keeps its own working directory')
+
+    check(
+      invocation.includes('Start-Sleep -Seconds ' + String(RELAUNCH_GRACE_SECONDS)),
+      'a self relaunch is watched for a quick death instead of being waited on',
+    )
+    check(invocation.includes('the replacement is running'), 'a self relaunch that survives the grace window is reported as running')
+    check(
+      !invocation.includes('WaitForExit(' + String(LAUNCHER_WAIT_MS) + ')'),
+      'a self relaunch never blocks the watcher on the new host',
+    )
+    const launcherInvocation = relaunchInvocation(launcherPlan).join('\n')
+    check(
+      launcherInvocation.includes('WaitForExit(' + String(LAUNCHER_WAIT_MS) + ')'),
+      'a launcher is still waited on, with a bound',
+    )
+    check(launcherInvocation.includes('the relaunch exited with code '), 'a launcher exit code is recorded')
+
+    const missing = []
+    const fallback = await resolveRelaunch({ home: 'C:' + backslash + 'nowhere', env: {}, onMissingLauncher: (path) => missing.push(path) })
+    check(fallback.source === 'self' && missing.length === 0, 'no launcher at all falls back to the self relaunch silently')
+    const broken = await resolveRelaunch({
+      home: 'C:' + backslash + 'nowhere',
+      env: { DSH_RESTART_WINDOWS_LAUNCHER: 'C:' + backslash + 'missing' + backslash + 'start.ps1' },
+      onMissingLauncher: (path) => missing.push(path),
+    })
+    check(broken.source === 'self' && missing.length === 1, 'a configured launcher that no longer exists falls back to self and says so')
   }
 
   {
